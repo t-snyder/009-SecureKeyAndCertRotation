@@ -1,0 +1,95 @@
+# Source: pulsar/templates/zookeeper-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "pulsar-zookeeper"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar-mini
+    heritage: Helm
+    cluster: pulsar
+    component: zookeeper
+spec:
+  serviceName: "pulsar-zookeeper"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pulsar
+      release: pulsar
+      component: zookeeper
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: Parallel
+  template:
+    metadata:
+      labels:
+        app: pulsar
+        release: pulsar
+        cluster: pulsar
+        component: zookeeper
+      annotations:
+    spec:
+      affinity:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: "pulsar-zookeeper"
+      securityContext:
+        fsGroup: 0
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+      - name: "pulsar-zookeeper"
+        image: "apachepulsar/pulsar-all:4.0.2"
+        imagePullPolicy: "IfNotPresent"
+        command: ["sh", "-c"]
+        args:
+        - >
+          bin/apply-config-from-env.py conf/zookeeper.conf;
+          
+          bin/generate-zookeeper-config.sh conf/zookeeper.conf;
+          OPTS="${OPTS} -Dlog4j2.formatMsgNoLookups=true" exec bin/pulsar zookeeper;
+        ports:
+        # prometheus needs to access /metrics endpoint
+        - name: http
+          containerPort: 8000
+        - name: client
+          containerPort: 2181
+        - name: follower
+          containerPort: 2888
+        - name: leader-election
+          containerPort: 3888
+        env:
+         - name: ZOOKEEPER_SERVERS
+           value: pulsar-zookeeper-0,pulsar-zookeeper-1,pulsar-zookeeper-2
+         - name: EXTERNAL_PROVIDED_SERVERS
+           value: "false"
+        envFrom:
+        - configMapRef:
+            name: "pulsar-zookeeper"
+        readinessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - '{ echo ruok; sleep 1; } | nc 127.0.0.1 2181 | grep imok'
+          initialDelaySeconds: 20
+          periodSeconds: 30
+          timeoutSeconds: 30
+          failureThreshold: 10
+        livenessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - '{ echo ruok; sleep 1; } | nc 127.0.0.1 2181 | grep imok'
+          initialDelaySeconds: 20
+          periodSeconds: 30
+          timeoutSeconds: 30
+          failureThreshold: 10
+        volumeMounts:
+        - name: "pulsar-zookeeper-data"
+          mountPath: /pulsar/data
+      volumes:
+      - name: "pulsar-zookeeper-data"
+        emptyDir: {}
+---

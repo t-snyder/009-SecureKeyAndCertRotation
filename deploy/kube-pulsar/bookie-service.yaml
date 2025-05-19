@@ -1,0 +1,44 @@
+# Source: pulsar/templates/bookkeeper-service-account.yaml
+#
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "pulsar-bookie"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: bookie
+---
+
+# Source: pulsar/templates/bookkeeper-service.yaml
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: "pulsar-bookie"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: bookie
+spec:
+  ports:
+  - name: "bookie"
+    port: 3181
+  - name: http
+    port: 8000
+  clusterIP: None
+  selector:
+    app: pulsar
+    release: pulsar
+    component: bookie
+  publishNotReadyAddresses: true
+---
+

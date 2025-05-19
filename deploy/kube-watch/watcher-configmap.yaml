@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "watcher-config"
+data:
+  kubeClusterName:   "minikube"
+  watcherNameSpace:  "pulsar"
+  watcherComponents: "Secret"
+  watcherNames:      "pulsar-tls-proxy" # For multiple - comma delimited
+  pulsarUseTLS:      "true"
+  WATCHER_LOG_LEVEL: "INFO"
+  pulsarUrl: "pulsar+ssl://pulsar-proxy.pulsar.svc.cluster.local:6651"
+  tls-cert: "pulsar-tls-proxy"                     # Must match secret name which contains tls.crt and ca.crt
+  tlsCertificateFilePath: "/app/certs/tls/tls.crt" # Must match volume mount in deployment

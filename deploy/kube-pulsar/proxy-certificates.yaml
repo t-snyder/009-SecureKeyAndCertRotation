@@ -1,0 +1,106 @@
+apiVersion: "cert-manager.io/v1"
+kind: Certificate
+metadata:
+  name: "pulsar-ca"
+  namespace: pulsar
+spec:
+  secretName: "pulsar-ca-tls"
+  commonName: "pulsar.svc.cluster.local"
+  duration: "2160h"
+  renewBefore: "360h"
+  usages:
+    - server auth
+    - client auth
+  isCA: true
+  issuerRef:
+    name: "pulsar-internal-cert-issuer"
+    # We can reference ClusterIssuers by changing the kind here.
+    # The default value is Issuer (i.e. a locally namespaced Issuer)
+    kind: Issuer
+    # This is optional since cert-manager will default to this value however
+    # if you are using an external issuer, change this to that issuer group.
+    group: cert-manager.io
+
+---
+
+apiVersion: "cert-manager.io/v1"
+kind: Certificate
+metadata:
+  name: "pulsar-tls-proxy"
+  namespace: pulsar
+spec:
+  # Secret names are always required.
+  secretName: "pulsar-tls-proxy"
+  duration: "2160h"
+  renewBefore: "360h"
+  subject:
+    organizations:
+    - pulsar
+  # The use of the common name field has been deprecated since 2000 and is
+  # discouraged from being used.
+  commonName: "pulsar-proxy"
+  isCA: false
+  privateKey:
+    size: 4096
+    algorithm: RSA
+    encoding: PKCS8
+  usages:
+    - server auth
+    - client auth
+  # At least one of a DNS Name, USI SAN, or IP address is required.
+  dnsNames:
+    -  "*.pulsar-proxy.pulsar.svc.cluster.local"
+    -  "pulsar-proxy.pulsar.svc.cluster.local"
+    -  "pulsar-proxy"
+  # Issuer references are always required.
+  issuerRef:
+    name: "pulsar-internal-cert-issuer-ca-issuer"
+    # We can reference ClusterIssuers by changing the kind here.
+    # The default value is Issuer (i.e. a locally namespaced Issuer)
+    kind: Issuer
+    # This is optional since cert-manager will default to this value however
+    # if you are using an external issuer, change this to that issuer group.
+    group: cert-manager.io
+    
+---
+# Source: pulsar/templates/tls-certs-internal.yaml
+apiVersion: "cert-manager.io/v1"
+kind: Certificate
+metadata:
+  name: "pulsar-tls-broker"
+  namespace: pulsar
+spec:
+  # Secret names are always required.
+  secretName: "pulsar-tls-broker"
+  duration: "2160h"
+  renewBefore: "360h"
+  subject:
+    organizations:
+    - pulsar
+  # The use of the common name field has been deprecated since 2000 and is
+  # discouraged from being used.
+  commonName: "pulsar-broker"
+  isCA: false
+  privateKey:
+    size: 4096
+    algorithm: RSA
+    encoding: PKCS8
+  usages:
+    - server auth
+    - client auth
+  # At least one of a DNS Name, USI SAN, or IP address is required.
+  dnsNames:
+    -  "*.pulsar-broker.pulsar.svc.cluster.local"
+    -  "pulsar-broker"
+  # Issuer references are always required.
+  issuerRef:
+    name: "pulsar-internal-cert-issuer-ca-issuer"
+    # We can reference ClusterIssuers by changing the kind here.
+    # The default value is Issuer (i.e. a locally namespaced Issuer)
+    kind: Issuer
+    # This is optional since cert-manager will default to this value however
+    # if you are using an external issuer, change this to that issuer group.
+    group: cert-manager.io
+---
+   
+

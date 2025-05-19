@@ -1,0 +1,208 @@
+# Source: pulsar/templates/bookkeeper-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "pulsar-bookie"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: bookie
+data:
+  # common config
+  
+  zkServers: "pulsar-zookeeper:2181"
+  zkLedgersRootPath: "/ledgers"
+  # enable bookkeeper http server
+  httpServerEnabled: "true"
+  httpServerPort: "8000"
+  # config the stats provider
+  statsProviderClass: org.apache.bookkeeper.stats.prometheus.PrometheusMetricsProvider
+  # use hostname as the bookie id
+  useHostNameAsBookieID: "true"
+  # Do not retain journal files as it increase the disk utilization
+  journalMaxBackups: "0"
+  journalDirectories: "/pulsar/data/bookkeeper/journal"
+  PULSAR_PREFIX_journalDirectories: "/pulsar/data/bookkeeper/journal"
+  ledgerDirectories: "/pulsar/data/bookkeeper/ledgers"
+  # TLS config
+  
+  PULSAR_GC: |
+    -XX:+UseG1GC -XX:MaxGCPauseMillis=10 -XX:+ParallelRefProcEnabled -XX:+UnlockExperimentalVMOptions -XX:+DoEscapeAnalysis -XX:ParallelGCThreads=4 -XX:ConcGCThreads=4 -XX:G1NewSizePercent=50 -XX:+DisableExplicitGC -XX:-ResizePLAB -XX:+ExitOnOutOfMemoryError -XX:+PerfDisableSharedMem
+  PULSAR_MEM: |
+    -Xms128m -Xmx256m -XX:MaxDirectMemorySize=256m
+  dbStorage_readAheadCacheMaxSizeMb: "32"
+  dbStorage_rocksDB_blockCacheSize: "8388608"
+  dbStorage_rocksDB_writeBufferSizeMB: "8"
+  dbStorage_writeCacheMaxSizeMb: "32"
+  diskCheckInterval: "1800"
+  diskUsageLwmThreshold: "0.85"
+  diskUsageThreshold: "0.95"
+  diskUsageWarnThreshold: "0.9"
+  gcWaitTime: "300000"
+  isForceGCAllowWhenNoSpace: "true"
+  majorCompactionInterval: "10800"
+  majorCompactionThreshold: "0.8"
+  minorCompactionInterval: "360"
+  minorCompactionThreshold: "0.2"
+---
+
+# Source: pulsar/templates/broker-configmap.yaml
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "pulsar-broker"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: broker
+data:
+  # Metadata settings
+  zookeeperServers: "pulsar-zookeeper:2181"
+  configurationStoreServers: "pulsar-zookeeper:2181"
+
+  # Broker settings
+  clusterName: pulsar
+  numHttpServerThreads: "8"
+  zooKeeperSessionTimeoutMillis: "30000"
+  statusFilePath: "/pulsar/logs/status"
+
+  # Tiered storage settings
+
+  # Function Worker Settings
+  # function worker configuration
+  functionsWorkerEnabled: "false"
+
+  # prometheus needs to access /metrics endpoint
+  webServicePort: "8080"
+  brokerServicePort: "6650"
+  brokerServicePortTls: "6651"
+  webServicePortTls: "8443"
+  # TLS Settings
+  tlsCertificateFilePath: "/pulsar/certs/broker/tls.crt"
+  tlsKeyFilePath: "/pulsar/certs/broker/tls.key"
+  tlsTrustCertsFilePath: "/pulsar/certs/ca/ca.crt"
+
+  # Authentication Settings
+  PULSAR_GC: |
+    -XX:+UseG1GC -XX:MaxGCPauseMillis=10 -Dio.netty.leakDetectionLevel=disabled -Dio.netty.recycler.linkCapacity=1024 -XX:+ParallelRefProcEnabled -XX:+UnlockExperimentalVMOptions -XX:+DoEscapeAnalysis -XX:ParallelGCThreads=4 -XX:ConcGCThreads=4 -XX:G1NewSizePercent=50 -XX:+DisableExplicitGC -XX:-ResizePLAB -XX:+ExitOnOutOfMemoryError -XX:+PerfDisableSharedMem
+  PULSAR_MEM: |
+    -Xms128m -Xmx256m -XX:MaxDirectMemorySize=256m
+  managedLedgerDefaultAckQuorum: "1"
+  managedLedgerDefaultEnsembleSize: "1"
+  managedLedgerDefaultWriteQuorum: "1"
+---
+
+# Source: pulsar/templates/proxy-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "pulsar-proxy"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: proxy
+data:
+  clusterName: pulsar
+  statusFilePath: "/pulsar/logs/status"
+  # prometheus needs to access /metrics endpoint
+  webServicePort: "8080"
+  servicePort: "6650"
+  tlsEnabledInProxy: "true"
+  servicePortTls: "6651"
+  webServicePortTls: "8443"
+  tlsCertificateFilePath: "/pulsar/certs/proxy/tls.crt"
+  tlsKeyFilePath: "/pulsar/certs/proxy/tls.key"
+  tlsTrustCertsFilePath: "/pulsar/certs/ca/ca.crt"
+  # if broker enables TLS, configure proxy to talk to broker using TLS
+  brokerServiceURLTLS: pulsar+ssl://pulsar-broker:6651
+  brokerWebServiceURLTLS: https://pulsar-broker:8443
+  tlsEnabledWithBroker: "true"
+  tlsCertRefreshCheckDurationSec: "300"
+  brokerClientTrustCertsFilePath: "/pulsar/certs/ca/ca.crt"
+
+  # Authentication Settings
+  PULSAR_GC: |
+    -XX:+UseG1GC -XX:MaxGCPauseMillis=10 -Dio.netty.leakDetectionLevel=disabled -Dio.netty.recycler.linkCapacity=1024 -XX:+ParallelRefProcEnabled -XX:+UnlockExperimentalVMOptions -XX:+DoEscapeAnalysis -XX:ParallelGCThreads=4 -XX:ConcGCThreads=4 -XX:G1NewSizePercent=50 -XX:+DisableExplicitGC -XX:-ResizePLAB -XX:+ExitOnOutOfMemoryError -XX:+PerfDisableSharedMem
+  PULSAR_MEM: |
+    -Xms64m -Xmx64m -XX:MaxDirectMemorySize=64m
+  httpNumThreads: "8"
+---
+
+
+# Source: pulsar/templates/toolset-configmap.yaml
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "pulsar-toolset"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: toolset
+data:
+  BOOKIE_LOG_APPENDER: "RollingFile"
+  
+  zkServers: "pulsar-zookeeper:2181"
+  zkLedgersRootPath: "/ledgers"
+  # enable bookkeeper http server
+  httpServerEnabled: "true"
+  httpServerPort: "8000"
+  # config the stats provider
+  statsProviderClass: org.apache.bookkeeper.stats.prometheus.PrometheusMetricsProvider
+  # use hostname as the bookie id
+  useHostNameAsBookieID: "true"
+  # talk to proxy
+  webServiceUrl: "https://pulsar-proxy:443/"
+  brokerServiceUrl: "pulsar+ssl://pulsar-proxy:6651/"
+  useTls: "true"
+  tlsAllowInsecureConnection: "false"
+  tlsTrustCertsFilePath: "/pulsar/certs/proxy-ca/ca.crt"
+  tlsEnableHostnameVerification: "false"
+  # Authentication Settings 
+  PULSAR_MEM: |
+    -Xms64M -Xmx128M -XX:MaxDirectMemorySize=128M
+---
+
+# Source: pulsar/templates/zookeeper-configmap.yaml
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "pulsar-zookeeper"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar-mini
+    heritage: Helm
+    cluster: pulsar-mini
+    component: zookeeper
+data:
+  dataDir: /pulsar/data/zookeeper
+  PULSAR_PREFIX_serverCnxnFactory: org.apache.zookeeper.server.NIOServerCnxnFactory
+  serverCnxnFactory: org.apache.zookeeper.server.NIOServerCnxnFactory
+#  PULSAR_PREFIX_serverCnxnFactory: org.apache.zookeeper.server.NettyServerCnxnFactory
+#  serverCnxnFactory: org.apache.zookeeper.server.NettyServerCnxnFactory
+  PULSAR_GC: |
+    -XX:+UseG1GC -XX:MaxGCPauseMillis=10 -Dcom.sun.management.jmxremote -Djute.maxbuffer=10485760 -XX:+ParallelRefProcEnabled -XX:+UnlockExperimentalVMOptions -XX:+DoEscapeAnalysis -XX:+DisableExplicitGC -XX:+ExitOnOutOfMemoryError -XX:+PerfDisableSharedMem
+  PULSAR_MEM: |
+    -Xms64m -Xmx128m
+---
+

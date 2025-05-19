@@ -1,0 +1,107 @@
+# Source: pulsar/templates/broker-statefulset.yaml
+#
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "pulsar-broker"
+  namespace: "pulsar"
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: broker
+spec:
+  serviceName: "pulsar-broker"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pulsar
+      release: pulsar
+      component: broker
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: Parallel
+  template:
+    metadata:
+      labels:
+        app: pulsar
+        release: pulsar
+        cluster: pulsar
+        component: broker
+    spec:
+      serviceAccountName: "pulsar-broker-acct"
+      affinity:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: "pulsar-broker"
+        image: "apachepulsar/pulsar-all:4.0.2"
+        imagePullPolicy: "IfNotPresent"
+        livenessProbe:
+          httpGet:
+            path: /status.html
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10
+        readinessProbe:
+          httpGet:
+            path: /status.html
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10
+        command: ["sh", "-c"]
+        args:
+        - >
+          bin/apply-config-from-env.py conf/broker.conf;
+          bin/gen-yml-from-env.py conf/functions_worker.yml;
+          echo "OK" > "${statusFilePath:-status}";
+          
+          timeout 15 bin/pulsar zookeeper-shell -server pulsar-zookeeper:2181 get /loadbalance/brokers/${HOSTNAME}.pulsar-broker.pulsar.svc.cluster.local:8080;
+          while [ $? -eq 0 ]; do
+            echo "broker ${HOSTNAME}.pulsar-broker.pulsar.svc.cluster.local znode still exists ... check in 10 seconds ...";
+            sleep 10;
+            timeout 15 bin/pulsar zookeeper-shell -server pulsar-zookeeper:2181 get /loadbalance/brokers/${HOSTNAME}.pulsar-broker.pulsar.svc.cluster.local:8080;
+          done;
+          cat conf/pulsar_env.sh;
+          OPTS="${OPTS} -Dlog4j2.formatMsgNoLookups=true" exec bin/pulsar broker;
+        ports:
+        # prometheus needs to access /metrics endpoint
+        - name: http
+          containerPort: 8080
+        - name: https
+          containerPort: 8443
+        - name: "pulsarssl"
+          containerPort: 6651
+        envFrom:
+        - configMapRef:
+            name: "pulsar-broker"
+        volumeMounts:
+          - name: broker-certs
+            mountPath: "/pulsar/certs/broker"
+            readOnly: true
+          - name: ca
+            mountPath: "/pulsar/certs/ca"
+            readOnly: true
+        env:
+      volumes:
+      - name: broker-certs
+        secret:
+          secretName: "pulsar-tls-broker"
+          items:
+          - key: tls.crt
+            path: tls.crt
+          - key: tls.key
+            path: tls.key
+      - name: ca
+        secret:
+          secretName: "pulsar-ca-tls"
+          items:
+          - key: ca.crt
+            path: ca.crt
+---
+

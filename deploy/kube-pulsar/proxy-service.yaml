@@ -1,0 +1,49 @@
+# Source: pulsar/templates/proxy-service-account.yaml
+#
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "pulsar-proxy"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: proxy
+  annotations:
+---
+
+# Source: pulsar/templates/proxy-service.yaml
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: "pulsar-proxy"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: proxy
+  annotations:
+spec:
+  type: LoadBalancer
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: sts-https
+    - name: "pulsarssl"
+      port: 6651
+      protocol: TCP
+      targetPort: "sts-pulsarssl"
+  selector:
+    app: pulsar
+    release: pulsar
+    component: proxy
+---
+

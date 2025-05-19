@@ -1,0 +1,100 @@
+# Source: pulsar/templates/proxy-statefulset.yaml
+#
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "pulsar-proxy"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: proxy
+spec:
+  serviceName: "pulsar-proxy"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pulsar
+      release: pulsar
+      cluster: pulsar
+      component: proxy
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: Parallel
+  template:
+    metadata:
+      labels:
+        app: pulsar
+        release: pulsar
+        cluster: pulsar
+        component: proxy
+    spec:
+      affinity:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: "pulsar-proxy"
+      containers:
+      - name: "pulsar-proxy"
+        image: "apachepulsar/pulsar-all:4.0.2"
+        imagePullPolicy: "IfNotPresent"
+        livenessProbe:
+          httpGet:
+            path: /status.html
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10
+        readinessProbe:
+          httpGet:
+            path: /status.html
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10
+        command: ["sh", "-c"]
+        args:
+        - >
+          bin/apply-config-from-env.py conf/proxy.conf &&
+          echo "OK" > "${statusFilePath:-status}" &&
+          OPTS="${OPTS} -Dlog4j2.formatMsgNoLookups=true" exec bin/pulsar proxy
+        ports:
+        # prometheus needs to access /metrics endpoint
+        - name: sts-http
+          containerPort: 8080
+        - name: sts-https
+          containerPort: 8443
+        - name: "sts-pulsarssl"
+          containerPort: 6651
+        envFrom:
+        - configMapRef:
+            name: "pulsar-proxy"
+        volumeMounts:
+          - mountPath: "/pulsar/certs/proxy"
+            name: proxy-certs
+            readOnly: true
+          - mountPath: "/pulsar/certs/ca"
+            name: ca
+            readOnly: true
+      
+      volumes:
+        - name: ca
+          secret:
+            secretName: "pulsar-ca-tls"
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: proxy-certs
+          secret:
+            secretName: "pulsar-tls-proxy"
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+
+---
+

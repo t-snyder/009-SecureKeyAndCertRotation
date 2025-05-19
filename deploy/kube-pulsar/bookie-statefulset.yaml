@@ -1,0 +1,87 @@
+# Source: pulsar/templates/bookkeeper-statefulset.yaml
+#
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "pulsar-bookie"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: bookie
+spec:
+  serviceName: "pulsar-bookie"
+  replicas: 4
+  selector:
+    matchLabels:
+      app: pulsar
+      release: pulsar
+      component: bookie
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: Parallel
+  template:
+    metadata:
+      labels:
+        app: pulsar
+        release: pulsar
+        cluster: pulsar
+        component: bookie
+    spec:
+      affinity:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: "pulsar-bookie"
+      securityContext:
+        fsGroup: 0
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+      - name: "pulsar-bookie"
+        image: "apachepulsar/pulsar-all:4.0.2"
+        imagePullPolicy: "IfNotPresent"
+        livenessProbe:
+          httpGet:
+            path: /api/v1/bookie/state
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          httpGet:
+            path: /api/v1/bookie/is_ready
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 60
+        command: ["sh", "-c"]
+        args:
+        - >
+          bin/apply-config-from-env.py conf/bookkeeper.conf;
+          
+          /pulsar/keytool/keytool.sh bookie ${HOSTNAME}.pulsar-bookie.pulsar.svc.cluster.local true;
+          OPTS="${OPTS} -Dlog4j2.formatMsgNoLookups=true" exec bin/pulsar bookie;
+        ports:
+        - name: "bookie"
+          containerPort: 3181
+        - name: http
+          containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: "pulsar-bookie"
+        volumeMounts:
+        - name: "pulsar-bookie-journal"
+          mountPath: /pulsar/data/bookkeeper/journal
+        - name: "pulsar-bookie-ledgers"
+          mountPath: /pulsar/data/bookkeeper/ledgers
+        
+      volumes:
+      - name: "pulsar-bookie-journal"
+        emptyDir: {}
+      - name: "pulsar-bookie-ledgers"
+        emptyDir: {}
+---
+

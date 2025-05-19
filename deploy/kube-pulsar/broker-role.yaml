@@ -1,0 +1,63 @@
+# Source: pulsar/templates/broker-cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "pulsar-broker-role"
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+rules:
+- apiGroups: [""]
+  resources:
+  - configmaps
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources:
+    - pods
+    - services
+    - secrets
+  verbs:
+    - list
+    - watch
+    - get
+    - update
+    - create
+    - delete
+    - patch
+- apiGroups: ["apps"]
+  resources:
+    - deployments
+    - statefulsets
+  verbs:
+    - list
+    - watch
+    - get
+    - update
+    - create
+    - delete
+    - patch
+---
+# Source: pulsar/templates/broker-cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: "pulsar-broker-rolebinding"
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: "pulsar-broker-role"
+subjects:
+- kind: ServiceAccount
+  name: "pulsar-broker-acct"
+  namespace: pulsar
+---
+

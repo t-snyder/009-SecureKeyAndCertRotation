@@ -1,0 +1,24 @@
+# Use an official Java runtime as a parent image
+FROM eclipse-temurin:21-jre
+
+# Set working directory in the container
+WORKDIR /app
+
+# Create a non-root user to run the application
+RUN groupadd -r pulsar && useradd -r -g pulsar pulsar
+
+# Copy the JAR file into the container at /app
+COPY watcher-0.1.jar /app/watcher-0.1.jar
+
+# Set proper permissions
+RUN chown -R pulsar:pulsar /app
+
+# Switch to non-root user
+USER pulsar
+
+# Configure Java options if needed (memory, etc.)
+ENV JAVA_OPTS="-Xmx512m"
+
+# Run the jar file when the container launches
+CMD ["sh", "-c", "java $JAVA_OPTS -jar watcher-0.1.jar"]
+

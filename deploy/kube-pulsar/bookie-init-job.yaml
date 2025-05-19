@@ -1,0 +1,40 @@
+## Source: pulsar/templates/bookkeeper-cluster-initialize.yaml
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "pulsar-bookie-init"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: "bookie-init"
+spec:
+# This feature was previously behind a feature gate for several Kubernetes versions and will default to true in 1.23 and beyond
+# https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
+  template:
+    spec:
+      
+      serviceAccountName: "pulsar-bookie"
+      containers:
+      - name: "pulsar-bookie-init"
+        image: "apachepulsar/pulsar-all:4.0.2"
+        imagePullPolicy: "IfNotPresent"
+        command: ["timeout", "60", "sh", "-c"]
+        args:
+          - >
+            bin/apply-config-from-env.py conf/bookkeeper.conf;
+
+            export BOOKIE_MEM="-Xmx128M";
+        envFrom:
+        - configMapRef:
+            name: "pulsar-bookie"
+        volumeMounts:
+        
+      volumes:
+      restartPolicy: OnFailure
+---
+

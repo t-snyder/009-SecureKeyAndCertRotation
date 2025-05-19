@@ -1,0 +1,51 @@
+# Source: pulsar/templates/zookeeper-service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "pulsar-zookeeper"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: zookeeper
+  annotations:
+---
+
+# Source: pulsar/templates/zookeeper-service.yaml
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: "pulsar-zookeeper"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: zookeeper
+  annotations:
+    {}
+spec:
+#  type: LoadBalancer
+  ports:
+    # prometheus needs to access /metrics endpoint
+    - name: http
+      port: 8000
+    - name: "follower"
+      port: 2888
+    - name: "leader-election"
+      port: 3888
+    - name: "client"
+      port: 2181
+  clusterIP: None
+  selector:
+    app: pulsar
+    release: pulsar
+    component: zookeeper
+---
+

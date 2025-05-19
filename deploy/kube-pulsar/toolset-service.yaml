@@ -1,0 +1,38 @@
+# Source: pulsar/templates/toolset-service-account.yaml
+#
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "pulsar-toolset"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: toolset
+---
+
+# Source: pulsar/templates/toolset-service.yaml
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: "pulsar-toolset"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: toolset
+spec:
+  clusterIP: None
+  selector:
+    app: pulsar
+    release: pulsar
+    component: toolset
+---
+

@@ -1,0 +1,19 @@
+apiVersion: "cert-manager.io/v1"
+kind: Issuer
+metadata:
+  name: "pulsar-internal-cert-issuer"
+  namespace: pulsar
+spec:
+  selfSigned: {}
+
+---
+# Source: pulsar/templates/tls-cert-internal-issuer.yaml
+apiVersion: "cert-manager.io/v1"
+kind: Issuer
+metadata:
+  name: "pulsar-internal-cert-issuer-ca-issuer"
+  namespace: pulsar
+spec:
+  ca:
+    secretName: "pulsar-ca-tls"
+

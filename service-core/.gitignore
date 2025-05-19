@@ -1,0 +1,26 @@
+# Ignore target directory (Maven build output)
+target/
+archive/
+
+# Ignore Eclipse-specific files
+.classpath
+.project
+.settings/
+
+# Ignore log files
+*.log
+
+# Ignore temporary files
+*.tmp
+*.bak
+
+# Ignore environment-specific files
+.env
+.env.local
+.env.development
+.env.production
+
+# Ignore Maven wrapper files (if not using Maven Wrapper)
+mvnw
+mvnw.cmd
+

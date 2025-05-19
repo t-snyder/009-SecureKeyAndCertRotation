@@ -1,0 +1,47 @@
+# Source: pulsar/templates/broker-service-account.yaml
+#
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "pulsar-broker-acct"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: broker
+---
+
+# Source: pulsar/templates/broker-service.yaml
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: "pulsar-broker"
+  namespace: pulsar
+  labels:
+    app: pulsar
+    chart: pulsar-3.9.0
+    release: pulsar
+    heritage: Helm
+    cluster: pulsar
+    component: broker
+spec:
+  type: ClusterIP
+  ports:
+  # prometheus needs to access /metrics endpoint
+  - name: http
+    port: 8080
+  - name: https
+    port: 8443
+  - name: "pulsarssl"
+    port: 6651
+  clusterIP: "None"
+  selector:
+    app: pulsar
+    release: pulsar
+    component: broker
+---
+

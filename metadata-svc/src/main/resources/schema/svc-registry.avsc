@@ -1,0 +1,73 @@
+{
+  {
+    "namespace": "com.zkpauth.schema",
+    "type": "record",
+    "name": "Permission",
+    "doc": "List of permissions granted to this service"
+    "fields": 
+    [
+      { "name": "resourceType", "type": "string", "doc": "Type of resource that can be accessed" },
+      { "name": "actions",      "type": { "type": "array", "items": "string" }, "doc": "Allowed actions on the resource (e.g., READ, WRITE)" },
+      { "name": "conditions",   "type": [ "null", { "type": "map", "values": "string" }], "default": null, "doc": "Optional conditions for permission" }
+    ]
+  },
+ 
+  {
+    "namespace": "com.zkpauth.schema",
+    "type": "record",
+    "name": "ZKPRequirements",
+    "doc": "Requirements for zero-knowledge proof verification"
+    "fields": 
+    [
+      { "name": "proofType",       "type": { "type": "enum", "name": "ProofType", "symbols": ["SCHNORR", "GROTH16", "PLONK", "BULLETPROOFS"] }, "doc": "Type of zero-knowledge proof required" },
+      { "name": "verificationKey", "type": "string", "doc": "Key used to verify the ZKP" },
+      { "name": "circuitId",       "type": [ "null", "string"], "default": null, "doc": "Optional reference to a specific proof circuit" }
+    ]
+  },
+
+  {
+    "namespace": "com.zkpauth.schema",
+    "type": "record",
+    "name": "AuditInfo",
+    "doc": "Audit information for this service"
+    "fields": 
+    [
+      { "name": "lastAuthAttempt",    "type": ["null", "long"], "default": null, "doc": "Timestamp of last authentication attempt" },
+      { "name": "lastSuccessfulAuth", "type": ["null", "long"], "default": null, "doc": "Timestamp of last successful authentication" },
+      { "name": "failedAttempts",     "type": "int",            "default": 0,    "doc": "Count of consecutive failed authentication attempts" }
+    ]
+  },
+    
+  {
+    "namespace": "com.zkpauth.schema",
+    "type": "record",
+    "name": "ServiceIdentity",
+    "doc": "List of service identities in the registry"
+    "fields": 
+    [
+      { "name": "serviceId",   "type": "string", "doc": "Unique identifier for the service" },
+      { "name": "name",        "type": "string", "doc": "Human-readable name of the service" },
+      { "name": "publicKey",   "type": "string", "doc": "Public key of the service used for verification" },
+      { "name": "authStatus",  "type": { "type": "enum", "name": "AuthStatus", "symbols": ["ACTIVE", "SUSPENDED", "REVOKED", "PENDING"] }, "doc": "Current authorization status of the service" },
+      { "name": "permissions", "type": { "type": "array", "items": "Permission" },
+      { "name": "createdAt",   "type": "long", "doc": "Timestamp when this service identity was created" },
+      { "name": "expiresAt",   "type": [ "null", "long"], "default": null, "doc": "Optional expiration timestamp for this identity" },
+      { "name": "metaData",    "type": [ "null", { "type": "map", "values": "string" }],  "default": null, "doc": "Optional metadata associated with this service" },
+      { "name": "zkpRequirements", "type": "ZKPRequirements" },
+      { "name": "auditInfo",       "type": "AuditInfo" }
+    ]
+  },  
+
+  {
+    "namespace": "com.zkpauth.schema",
+    "type": "record",
+    "name": "ServiceAuthorizationRegistry",
+    "doc": "Schema for maintaining service identity authorization information",
+    "fields": 
+    [
+      { "name": "version",     "type": "string", "doc": "Schema version identifier" },
+      { "name": "lastUpdated", "type": "long",   "doc": "Timestamp of last update (epoch milliseconds)" },
+      { "name": "services",    "type": {{ "type": "array", "items": "ServiceIdentity" }, "null" ]}
+    ]
+  }
+}

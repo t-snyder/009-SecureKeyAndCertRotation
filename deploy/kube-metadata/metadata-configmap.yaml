@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "metadata-svc-config"
+data:
+  pulsarUseTLS:   "true"
+  pulsarUrl:      "pulsar+ssl://192.168.49.20:6651"
+  tlsSecret:      "pulsar-client-tls"                    # Must match secret name which contains ca.crt and ca.crt
+  caCertFilePath: "app/certs/ca.crt"    # Must match volume mount

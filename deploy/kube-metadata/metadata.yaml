@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metadata-svc
+  labels:
+    app: metadata-svc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metadata-svc
+  template:
+    metadata:
+      labels:
+        app: metadata-svc
+    spec:
+      serviceAccountName: metadata-svc-sa
+      containers:
+      - name: metadata-svc
+        image: library/metadata-svc:1.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: metadata-svc-config
+          mountPath: /app/config
+          readOnly: true
+        - mountPath: "/app/certs"
+          name: proxy-certs
+          readOnly: true
+      volumes:
+      - name: proxy-certs
+        secret:
+          secretName: "pulsar-client-tls"
+          items:
+          - key: ca.crt
+            path: ca.crt
+          - key: tls.crt
+            path: tls.crt 
+      - name: metadata-svc-config
+        configMap:
+          name: metadata-svc-config
+ 
