@@ -2,6 +2,7 @@
 target/
 
 # Ignore Eclipse-specific files
+.metadata
 .classpath
 .project
 .settings/
