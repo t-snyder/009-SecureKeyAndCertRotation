@@ -4,19 +4,23 @@ package verticle;
 import io.fabric8.kubernetes.api.model.Secret;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.Watcher;
+import io.fabric8.kubernetes.client.Watcher.Action;
 import io.fabric8.kubernetes.client.WatcherException;
 
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
 import io.vertx.core.WorkerExecutor;
 
+import java.util.Arrays;
 import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import pulsar.WatcherPulsarClient;
+import service.KeyExchangeService;
 import svc.model.CertificateMessageFactory;
+import svc.model.KyberInitiator;
 import svc.model.ServiceCoreIF;
 import svc.model.WatcherConfig;
 
@@ -35,18 +39,20 @@ public class SecretsWatcherVert extends AbstractVerticle
   private String           nameSpace    = null;
   private List<String>     watcherNames = null;
   
-  private WatcherPulsarClient       pulsarClient   = null;
+//  private WatcherPulsarClient       pulsarClient   = null;
+  private KeyExchangeService        keyExchangeSvc = null;
   private WorkerExecutor            workerExecutor = null;
   private CertificateMessageFactory messageFactory = null;
   
   
   // Constructor injection for the KubernetesClient.
-  public SecretsWatcherVert( KubernetesClient kubernetesClient, WatcherPulsarClient pulsarClient, WatcherConfig watcherConfig, String nameSpace, String podName ) throws Exception
+  public SecretsWatcherVert( KubernetesClient kubernetesClient, KeyExchangeService keyExchangeSvc, WatcherPulsarClient pulsarClient, WatcherConfig watcherConfig, String nameSpace, String podName ) throws Exception
   {
-    this.client       = kubernetesClient;
-    this.config       = watcherConfig;
-    this.nameSpace    = nameSpace;
-    this.pulsarClient = pulsarClient;
+    this.client         = kubernetesClient;
+    this.config         = watcherConfig;
+    this.nameSpace      = nameSpace;
+    this.keyExchangeSvc = keyExchangeSvc;
+//    this.pulsarClient   = pulsarClient;
 
     if( config.getWatcherNames() != null  && config.getWatcherNames().length() > 0 )
     {
@@ -112,6 +118,7 @@ public class SecretsWatcherVert extends AbstractVerticle
         try
         {
           monitorSecrets();
+          return ServiceCoreIF.SUCCESS;
         } 
         catch( Exception e )
         {
@@ -121,16 +128,17 @@ public class SecretsWatcherVert extends AbstractVerticle
           throw e;
         }
         
-        return ServiceCoreIF.SUCCESS;
+//        return ServiceCoreIF.SUCCESS;
       }, result -> 
          {
            if( result.succeeded() )
            {
-             LOGGER.info( "Pulsar client initialized successfully." );
+             LOGGER.info( "SecretsWatcherVert.start verticle initialized successfully." );
+             startPromise.complete();  
            }
            else
            {
-             String msg = "Error initializing Pulsar client. Stopping verticle.";
+             String msg = "SecretsWatcherVert.start - Error initializing Pulsar client. Stopping verticle.";
              LOGGER.error( msg );
              startPromise.fail( msg );
            }
@@ -146,7 +154,7 @@ public class SecretsWatcherVert extends AbstractVerticle
       throw e;
     }   
 
-    startPromise.complete();
+//    startPromise.complete();
     LOGGER.info( "SecretsWatcherVert.start() - SecretWatcherVert started." );
   }
 
@@ -181,9 +189,18 @@ public class SecretsWatcherVert extends AbstractVerticle
     // Set up the watch using the Fabric8 Watcher interface.
     client.secrets().inNamespace( nameSpace ).watch( new Watcher<Secret>()
     {
-      @Override
+       @Override
       public void eventReceived( Action action, Secret secret )
       {
+        LOGGER.info( "SecretsWatcherVert.monitorSecrets watch loop - received an event." );
+ 
+        // Quick validation on event loop
+        if (secret == null || secret.getMetadata() == null) 
+        {
+          LOGGER.warn( "Received null secret for action {}.", action );
+          return;
+        }
+        
         String secretName = secret.getMetadata().getName();
 
         if( watcherNames != null && !watcherNames.contains( secretName ) )
@@ -191,68 +208,20 @@ public class SecretsWatcherVert extends AbstractVerticle
           LOGGER.info( "Secret {} not in watcher list. Ignoring.", secretName );
           return;
         }
-        
-        if( secret == null || secret.getMetadata() == null )
-        {
-          LOGGER.warn( "Received null secret for action {}.", action );
-          return;
-        }
 
-        try 
+        workerExecutor.executeBlocking( () ->
         {
-          workerExecutor.executeBlocking( () ->
+          processSecretEvent(action, secret);
+          return ServiceCoreIF.SUCCESS;
+        }, false, result -> 
           {
-            try
-            {
-              switch( action )
-              {
-                case ADDED:
-                  LOGGER.info( "Secret ADDED: {}", secretName );
-                  processAdd( secret );
-                  break;
-                case MODIFIED:
-                  LOGGER.info( "Secret MODIFIED: {}", secretName );
-                  processModified( secret );
-                  break;
-                case DELETED:
-                  LOGGER.info( "Secret DELETED: {}", secretName );
-                  processDeleted( secret );
-                  break;
-                case ERROR:
-                  LOGGER.error( "Error event received on Secret: {}", secretName );
-                  break;
-                default:
-                  LOGGER.warn( "Received unknown action {} for Secret: {}", action, secretName );
-              }
- 
-              return ServiceCoreIF.SUCCESS;
-            } 
-            catch( Exception e ) 
-            {
-              LOGGER.error( "Error processing secret {}: {}", secretName, e.getMessage(), e );
-              throw e;
+            // Handle result on event loop
+            if (result.failed()) {
+                LOGGER.error("Failed to process secret {}: {}", secretName, result.cause());
             }
-          },
-          result -> 
-          {
-            if( result.succeeded() )
-            {
-              LOGGER.info( "Pulsar client initialized successfully." );
-            }
-            else
-            {
-              String msg = "Error initializing Pulsar client. Stopping verticle.";
-              LOGGER.error( msg );
-            }
-          });  
-        }
-        catch( Exception e )
-        {
-          LOGGER.error( "Error processing secret {}: {}", secretName, e.getMessage() );
-          throw new RuntimeException( e );
-        }
+          });
       }
- 
+       
       @Override
       public void onClose( WatcherException cause )
       {
@@ -293,7 +262,54 @@ public class SecretsWatcherVert extends AbstractVerticle
       }
     });
   }
-  
+ 
+  private void processSecretEvent( Action action, Secret secret ) 
+   throws Exception 
+  {
+    byte[] encMessage       = null;
+    String eventBusAddress  = null;
+    String secretName       = secret.getMetadata().getName();      
+
+    KyberInitiator encKey = keyExchangeSvc.getActiveKey( "watcher" );
+    LOGGER.info( "SecretsWatcherVert.processSecretEvent encKey.svcId = " + encKey.getSvcId() );
+    LOGGER.info( "SecretsWatcherVert.processSecretEvent encKey.publicKey = " + Arrays.toString( encKey.getPublicKeyEncoded() ));
+    LOGGER.info( "SecretsWatcherVert.processSecretEvent encKey.sharedSecret = " + Arrays.toString( encKey.getSharedSecret() ));
+
+    byte[] sharedSecret = encKey.getSharedSecret();
+    
+    if( sharedSecret == null )
+    {
+      String errMsg = "SecretsWatcherVert.processSecretEvent could not obtain encryption key.";
+      LOGGER.info( errMsg );
+      throw new Exception( errMsg );
+    }
+
+    messageFactory = new CertificateMessageFactory( sharedSecret );
+    
+    switch( action ) 
+    {
+      case ADDED:
+        LOGGER.info( "Secret ADDED: {}", secretName );
+        encMessage      = messageFactory.createAddedMessage( secret, "watcher" );
+        eventBusAddress = "cert.publishAdded";
+        break;
+      case MODIFIED:
+        encMessage      = messageFactory.createModifiedMessage( secret, "watcher" );
+        eventBusAddress = "cert.publishModified";
+        break;
+      case DELETED:
+        encMessage      = messageFactory.createDeletedMessage( secret, "watcher" );
+        eventBusAddress = "cert.publishDeleted";
+        break;
+      default:
+        return;
+    }
+      
+    // Send via event bus (this will switch back to event loop)
+    vertx.eventBus().request(eventBusAddress, encMessage);
+  }
+ 
+/**  
   private void processAdd( Secret secret )
    throws Exception
   {
@@ -310,7 +326,7 @@ public class SecretsWatcherVert extends AbstractVerticle
         }
             
         // Create encrypted message from the secret
-        byte[] encryptedMessage = messageFactory.createAddedMessage( secret );
+        byte[] encryptedMessage = messageFactory.createAddedMessage( secret, "watcher" );
             
         // Send via event bus
         vertx.eventBus().request("cert.publishAdded", encryptedMessage, ar -> 
@@ -416,5 +432,5 @@ public class SecretsWatcherVert extends AbstractVerticle
       LOGGER.info( "Deleted cert message successfully sent." );
     }
   }
-
+**/
 }

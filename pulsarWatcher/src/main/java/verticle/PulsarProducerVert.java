@@ -19,7 +19,8 @@ import io.vertx.core.Promise;
 //import io.vertx.core.WorkerExecutor;
 import io.vertx.core.json.JsonObject;
 import pulsar.WatcherPulsarClient;
-
+import svc.exceptions.AvroTransformException;
+import svc.model.KyberExchangeMessage;
 import svc.model.ServiceCoreIF;
 import svc.model.WatcherIF;
 import svc.model.WatcherMsgHeader;
@@ -65,17 +66,32 @@ public class PulsarProducerVert extends AbstractVerticle
     // Register to consume messages from the event bus for the pulsar keyProducer
     vertx.eventBus().consumer("pulsar.keyProducer", message -> 
     { 
-      LOGGER.info("PulsarPublisherVert.start() - Received message on event bus");
+      LOGGER.info("PulsarPublisherVert.start() - Received  pulsar.keyProducer message on event bus");
       
       JsonObject jsonMsg = (JsonObject) message.body();
       
       Map<String, String> headers = WatcherMsgHeader.fromJson( jsonMsg.getJsonObject( "headers" ));
       String              msgKey  = jsonMsg.getString( "msgKey"  );
       byte[]              msgBody = jsonMsg.getBinary( "msgBody" );
- 
+
+      // Temporary Test
+      try
+      {
+        KyberExchangeMessage testMsg = KyberExchangeMessage.deSerialize( msgBody );
+        LOGGER.info( "KyberExchangeMessage successfully deserialized in PulsarProducerVert." );
+      } 
+      catch( Exception e )
+      {
+        LOGGER.error( "KyberExchangeMessage deSerialize error. Error = " + e.getMessage() );
+        throw new RuntimeException( e );
+      }
+      
       try
       {
         sendMessage( keyProducer, msgKey, (byte[])msgBody, headers );
+        LOGGER.info("===========================================================================" );
+        LOGGER.info("PulsarProducerVert eventbus consumer pulsar.keyProducer sent pulsar message." );
+        LOGGER.info("Message sent using keyProducer on " + ServiceCoreIF.KeyExchangeRequestTopic + " topic." );
       } 
       catch( PulsarClientException e )
       {
@@ -187,7 +203,7 @@ public class PulsarProducerVert extends AbstractVerticle
     try 
     {
       keyProducer = pulsarClient.newProducer(Schema.BYTES)
-                                .topic(WatcherIF.KeyExchangeRequestTopic)
+                                .topic( ServiceCoreIF.KeyExchangeRequestTopic)
                                 .producerName(  KeyProducerName )
                                 .enableBatching(false)                   // Enable guaranteed delivery
                                 .maxPendingMessages(0)                    // Enable guaranteed delivery

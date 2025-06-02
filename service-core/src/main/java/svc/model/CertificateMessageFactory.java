@@ -2,8 +2,13 @@ package svc.model;
 
 
 import io.fabric8.kubernetes.api.model.Secret;
+import svc.crypto.AesGcmHkdfCrypto;
+import svc.crypto.EncryptedData;
+
+import java.time.Instant;
 //import java.util.Base64;
 import java.util.Map;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,8 +24,10 @@ public class CertificateMessageFactory
   private static final Logger LOGGER = LoggerFactory.getLogger( CertificateMessageFactory.class );
 
   // Secret key for encryption 
-  private final byte[] encryptionKey;
-
+  private final byte[]     encryptionKey;
+  private AesGcmHkdfCrypto aesHandler    = null;
+  
+  
   /**
    * Constructor
    * 
@@ -31,9 +38,13 @@ public class CertificateMessageFactory
   {
     if( encryptionKey == null )
     {
-      throw new IllegalArgumentException( "Encryption key cannot be null or empty" );
+      String errMsg = "CertificateMessageFactory.constructor - Encryption key cannot be null or empty";
+      LOGGER.info( errMsg );
+      throw new IllegalArgumentException( errMsg );
     }
+ 
     this.encryptionKey = encryptionKey;
+    this.aesHandler    = new AesGcmHkdfCrypto();
   }
 
   /**
@@ -47,7 +58,7 @@ public class CertificateMessageFactory
    * @throws Exception
    *           If message creation fails
    */
-  public byte[] createFromSecret( Secret secret, CertificateMessage.CertEventType eventType ) 
+  public byte[] createMsgFromSecret( Secret secret, String eventType, String serviceId ) 
     throws Exception
   {
     if( secret == null || secret.getMetadata() == null )
@@ -70,12 +81,14 @@ public class CertificateMessageFactory
       LOGGER.warn( "TLS certificate not found in secret: {}", secret.getMetadata().getName() );
     }
 
-    // Get metadata
-    String secretName = secret.getMetadata().getName();
-    String namespace  = secret.getMetadata().getNamespace();
+    // Create the certificate message
+    CertificateMessage certMsg      = new CertificateMessage( UUID.randomUUID().toString(), Instant.now().toEpochMilli(), eventType, serviceId, caCert, tlsCert );
+    byte[]             certMsgBytes = CertificateMessage.serialize( certMsg );
 
-    // Create and encrypt the message
-    return CertificateMessage.createEncryptedMessage( eventType, caCert, tlsCert, secretName, namespace, encryptionKey );
+    LOGGER.info( "CertificateMessageFactory.createMsgFromSecret. encryptionKey = " + encryptionKey );
+   
+    EncryptedData encData = aesHandler.encrypt( certMsgBytes, encryptionKey );
+    return encData.serialize();
   }
 
   /**
@@ -109,9 +122,10 @@ public class CertificateMessageFactory
    * @throws Exception
    *           If message creation fails
    */
-  public byte[] createInitialMessage( Secret secret ) throws Exception
+  public byte[] createInitialMessage( Secret secret, String requestingServiceId ) 
+    throws Exception
   {
-    return createFromSecret( secret, CertificateMessage.CertEventType.INITIAL );
+    return createMsgFromSecret( secret, "INITIAL", requestingServiceId );
   }
 
   /**
@@ -123,9 +137,10 @@ public class CertificateMessageFactory
    * @throws Exception
    *           If message creation fails
    */
-  public byte[] createAddedMessage( Secret secret ) throws Exception
+  public byte[] createAddedMessage( Secret secret, String requestingServiceId )
+   throws Exception
   {
-    return createFromSecret( secret, CertificateMessage.CertEventType.ADDED );
+    return createMsgFromSecret( secret, "ADDED", requestingServiceId );
   }
 
   /**
@@ -137,9 +152,10 @@ public class CertificateMessageFactory
    * @throws Exception
    *           If message creation fails
    */
-  public byte[] createModifiedMessage( Secret secret ) throws Exception
+  public byte[] createModifiedMessage( Secret secret, String requestingServiceId )
+   throws Exception
   {
-    return createFromSecret( secret, CertificateMessage.CertEventType.MODIFIED );
+    return createMsgFromSecret( secret, "MODIFIED", requestingServiceId );
   }
 
   /**
@@ -151,20 +167,10 @@ public class CertificateMessageFactory
    * @throws Exception
    *           If message creation fails
    */
-  public byte[] createDeletedMessage( Secret secret ) throws Exception
+  public byte[] createDeletedMessage( Secret secret, String requestingServiceId ) 
+   throws Exception
   {
-    return createFromSecret( secret, CertificateMessage.CertEventType.DELETED );
+    return createMsgFromSecret( secret, "DELETED", requestingServiceId );
   }
-
-  /**
-   * Decrypt and read a message
-   * 
-   * @param encryptedData
-   *          The encrypted message data
-   * @return The decrypted CertificateMessage
-   */
-  public CertificateMessage readMessage( byte[] encryptedData )
-  {
-    return CertificateMessage.decryptMessage( encryptedData, encryptionKey );
-  }
+ 
 }

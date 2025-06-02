@@ -26,7 +26,6 @@ public interface ServiceCoreIF
 
   public static final String MetaDataWatcherCertTopic = "persistent://metadata/watcher/cert-update";     // topic for receiving tls cert update from watcher 
   public static final String KeyExchangeRequestTopic  = "persistent://metadata/kyber/exchange-request";  // topic for metadata service to receive a key exchange request
-//  public static final String KeyExchangeResponseTopic = "persistent://metadata/kyber/exchange/response"; // topic for watcher to receive key exchange result
 
   public static final String WatcherKeyRequestTopic   = "persistent://metadata/watcher/exchange-request";  // topic for metadata service to receive a key exchange request
   public static final String WatcherKeyResponseTopic  = "persistent://metadata/watcher/exchange-response"; // topic for watcher to receive key exchange result

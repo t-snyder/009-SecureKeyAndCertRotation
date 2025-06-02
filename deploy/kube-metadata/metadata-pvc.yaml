@@ -1,0 +1,16 @@
+# PersistentVolumeClaim for secret storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-secrets-pvc
+  labels:
+    app: metadata-svc
+    component: shared-secrets
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard  # Adjust based on your cluster's storage classes
+

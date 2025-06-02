@@ -16,7 +16,6 @@ import org.slf4j.LoggerFactory;
 
 import controller.PulsarTLSClient;
 import svc.model.ChildVerticle;
-import svc.model.KyberKey;
 import svc.utils.ConfigReader;
 
 import verticle.MetadataServiceVert;
@@ -25,7 +24,8 @@ import verticle.MetadataServiceVert;
 public class MetadataService
 {
   private static final Logger LOGGER      = LoggerFactory.getLogger( MetadataService.class );
-  private static final String ConfEnvKey  = "CONFIG_MAP_KEY";  
+  private static final String ConfEnvKey  = "CONFIG_MAP_NAME"; 
+  private static final String DefaultConf = "metadata-svc-config";
   private static ConfigReader confReader  = new ConfigReader();
 
   private Vertx               vertx       = null;
@@ -35,13 +35,10 @@ public class MetadataService
   private Map<String, String> config      = null;
 
   private PulsarClient        pulsarClient      = null;
-//  private EventBusHandler     eventBusHandler   = null;
   private List<ChildVerticle> deployedVerticles = new ArrayList<ChildVerticle>();
 
-//  private WorkerExecutor      workerExecutor = null;
-  private MetadataServiceVert mdVert         = null;
-  private KyberKey            watcherKey     = null;
-  
+  private MetadataServiceVert mdVert     = null;
+
   
   // Static inner helper class responsible for holding the Singleton instance
   private static class SingletonHelper 
@@ -68,7 +65,13 @@ public class MetadataService
     this.kubeClient = confReader.getKubeClient();
     this.nameSpace  = confReader.getNamespace();
     this.configName = confReader.getConfigMapNameFromEnv( ConfEnvKey );
-    this.config     = confReader.getConfigProperties( configName );
+    
+    if( configName == null )
+      configName = DefaultConf;
+    
+    LOGGER.info( "*** Namespace = " + nameSpace + "; Config map name = " + configName );
+    
+    this.config = confReader.getConfigProperties( configName );
 
     verifyConfig(); 
     
@@ -133,7 +136,7 @@ public class MetadataService
     }
   }
 
-  private void cleanupResources() 
+  public void cleanupResources() 
   {
     LOGGER.info("Starting cleanup of MetadataServiceVert resources");
     
@@ -184,8 +187,8 @@ public class MetadataService
     }
   }  
 
-  public KyberKey getWatcherKey()               { return watcherKey; }   
-  public void     setWatcherKey( KyberKey key ) { this.watcherKey = key; }
+//  public KyberResponder getWatcherKey()               { return watcherKey; }   
+//  public void     setWatcherKey( KyberResponder key ) { this.watcherKey = key; }
   
   
   // Main method can be used to run without Maven plugin

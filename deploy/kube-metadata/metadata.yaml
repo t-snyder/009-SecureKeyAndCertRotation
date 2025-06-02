@@ -14,16 +14,22 @@ spec:
       labels:
         app: metadata-svc
     spec:
+#      hostNetwork: true  # This allows access to host ports
+#      dnsPolicy: ClusterFirstWithHostNet
       serviceAccountName: metadata-svc-sa
       containers:
       - name: metadata-svc
-        image: library/metadata-svc:1.0
+        image: library/metadatasvc:1.0
         imagePullPolicy: IfNotPresent
         env:
         - name: POD_NAME
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        - name: CONFIG_MAP_NAME
+          value: "metadata-svc-config"
+        - name: SHARED_SECRET_PATH
+          value: "/app/data/shared-secrets.json"
         volumeMounts:
         - name: metadata-svc-config
           mountPath: /app/config
@@ -31,6 +37,12 @@ spec:
         - mountPath: "/app/certs"
           name: proxy-certs
           readOnly: true
+        - name: avro-schemas
+          mountPath: "/app/avro-schemas"
+          readOnly: true
+        - name: shared-secrets-volume
+          mountPath: /app/data
+          readOnly: false
       volumes:
       - name: proxy-certs
         secret:
@@ -43,4 +55,10 @@ spec:
       - name: metadata-svc-config
         configMap:
           name: metadata-svc-config
+      - name: avro-schemas
+        configMap:
+          name: avro-schemas
+      - name: shared-secrets-volume
+        persistentVolumeClaim:
+          claimName: shared-secrets-pvc
  

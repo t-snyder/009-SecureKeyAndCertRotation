@@ -8,7 +8,7 @@ WORKDIR /app
 RUN groupadd -r metadata && useradd -r -g metadata metadata
 
 # Copy the JAR file into the container at /app
-COPY metadata-svc-0.1.jar /app/metadatasvc-0.1.jar
+COPY metadatasvc-0.1.jar /app/metadatasvc-0.1.jar
 
 # Set proper permissions
 RUN chown -R metadata:metadata /app
@@ -20,5 +20,5 @@ USER metadata
 ENV JAVA_OPTS="-Xmx512m"
 
 # Run the jar file when the container launches
-CMD ["sh", "-c", "java $JAVA_OPTS -jar metadata-svc-0.1.jar"]
+CMD ["sh", "-c", "java $JAVA_OPTS -jar metadatasvc-0.1.jar"]
 

@@ -38,6 +38,9 @@ spec:
         - mountPath: "/app/certs/tls"
           name: proxy-certs
           readOnly: true
+        - name: avro-schemas
+          mountPath: "/app/avro-schemas"
+          readOnly: true
       volumes:
       - name: proxy-certs
         secret:
@@ -50,4 +53,6 @@ spec:
       - name: watcher-config
         configMap:
           name: watcher-config
- 
+      - name: avro-schemas
+        configMap:
+          name: avro-schemas 

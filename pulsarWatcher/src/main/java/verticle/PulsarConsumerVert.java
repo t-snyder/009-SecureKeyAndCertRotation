@@ -157,7 +157,9 @@ public class PulsarConsumerVert extends AbstractVerticle
     {
       workerExecutor.executeBlocking(() -> 
       {
-        try 
+        LOGGER.info( "=======================================================================================");
+        LOGGER.info( "PulsarConsumerVert.createKeyExchangeMessageListener received key exchange response msg.");
+    	try 
         {
           byte[] kyberMsgBytes = msg.getData();
           vertx.eventBus().publish( "watcher.keyExchange.response", kyberMsgBytes );

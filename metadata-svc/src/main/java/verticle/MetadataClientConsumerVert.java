@@ -5,6 +5,7 @@ import io.vertx.core.AbstractVerticle;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
+import io.vertx.core.Vertx;
 import io.vertx.core.WorkerExecutor;
 
 import io.vertx.core.eventbus.EventBus;
@@ -17,6 +18,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import svc.model.ServiceCoreIF;
+import svc.pulsar.PulsarConsumerErrorHandler;
 
 
 public class MetadataClientConsumerVert extends AbstractVerticle
@@ -24,13 +26,16 @@ public class MetadataClientConsumerVert extends AbstractVerticle
   private static final Logger LOGGER            = LoggerFactory.getLogger( MetadataClientConsumerVert.class );
   private static final String SUBSCRIPTION_NAME = "metadata-request-subscription";
 
-  private PulsarClient        pulsarClient  = null;
+  private PulsarClient               pulsarClient = null;
+  private PulsarConsumerErrorHandler errHandler   = new PulsarConsumerErrorHandler();
   
+  private Vertx            vertx            = null;
   private WorkerExecutor   workerExecutor   = null;
   private Consumer<byte[]> consumer         = null;
 
-  public MetadataClientConsumerVert( PulsarClient pulsarClient )
+  public MetadataClientConsumerVert( Vertx vertx, PulsarClient pulsarClient )
   {
+    this.vertx        = vertx;
     this.pulsarClient = pulsarClient;
   }
 
@@ -40,62 +45,91 @@ public class MetadataClientConsumerVert extends AbstractVerticle
   {
     workerExecutor = vertx.createSharedWorkerExecutor("msg-handler");
     
-    try
+    startRequestConsumer().onSuccess(result -> 
     {
-      startRequestConsumer();
-      startPromise.complete();
       LOGGER.info("MetadataConsumerVert started successfully");
-    } 
-    catch( PulsarClientException e )
-    {
-      String msg = "Failed to initialize MetadataConsumerVert: " + e.getMessage();
-      LOGGER.error(msg, e);
-      cleanup();
-      startPromise.fail(msg);
-    }
+      startPromise.complete(); // Single completion point
+    })
+    .onFailure(throwable -> {
+        String msg = "Failed to initialize MetadataConsumerVert: " + throwable.getMessage();
+        LOGGER.error(msg, throwable);
+        cleanup();
+        startPromise.fail(msg); // Single failure point
+    });
     
-    startPromise.complete();
+//    startPromise.complete();
   }
 
-  private void startRequestConsumer() 
-   throws PulsarClientException
+  private MessageListener<byte[]> createMessageListener() 
   {
-    MessageListener<byte[]> requestMsgListener = (consumer, msg) -> 
+    return (consumer, msg) -> 
     {
-      workerExecutor.executeBlocking( () -> 
+      workerExecutor.executeBlocking(() -> 
       {
-        try 
+          try 
+          {
+            handleRequestMessage( msg );
+            consumer.acknowledge( msg );
+            LOGGER.info( "Consumer - Message Received and Ack'd - " + new String( msg.getData() ));
+            return "success";
+          } 
+          catch( Throwable t )
+          {
+            LOGGER.error( "Error processing message. Error = " + t.getMessage() );
+            throw t;
+          }
+      }).onComplete(ar -> 
+      {
+        if( ar.failed() ) 
         {
-          handleRequestMessage( msg );
-          consumer.acknowledge( msg );
-          LOGGER.info( "Consumer - Message Received and Ack'd - " + new String( msg.getData() ));
-          return "success";
-        } 
-        catch( Throwable t )
-        {
-          LOGGER.error( "Error processing message. Error = " + t.getMessage() );
-          throw t;
+          LOGGER.error("Worker execution failed: {}", ar.cause().getMessage());
+          errHandler.handleMessageProcessingFailure(pulsarClient, consumer, msg, ar.cause());
         }
       });
     };
+  };
+ 
+  private Future<Void> startRequestConsumer() 
+//   throws PulsarClientException
+  {
+    LOGGER.info("MetadataClientConsumerVert.startCertConsumer() - Starting key exchange response consumer");
 
-    try
+    Promise<Void>           promise            = Promise.promise();
+    MessageListener<byte[]> requestMsgListener = createMessageListener();
+
+    workerExecutor.executeBlocking(() -> 
     {
-      consumer = pulsarClient.newConsumer().topic( ServiceCoreIF.MetaDataClientRequestTopic ) 
-                                           .subscriptionName( SUBSCRIPTION_NAME )
-                                           .subscriptionType( SubscriptionType.Shared )
-                                           .messageListener(  requestMsgListener )
-                                           .ackTimeout(10, TimeUnit.SECONDS) // Automatic redelivery if not acknowledged
-                                           .subscribe();
-      LOGGER.info("Metadata request consumer created and subscribed to topic: {}", 
-          ServiceCoreIF.MetaDataClientRequestTopic);
-    } 
-    catch( PulsarClientException e )
+      try
+      {
+        consumer = pulsarClient.newConsumer().topic( ServiceCoreIF.MetaDataClientRequestTopic ) 
+                                             .subscriptionName( SUBSCRIPTION_NAME )
+                                             .subscriptionType( SubscriptionType.Shared )
+                                             .messageListener(  requestMsgListener )
+                                             .ackTimeout(10, TimeUnit.SECONDS) // Automatic redelivery if not acknowledged
+                                             .subscribe();
+        LOGGER.info("Metadata request consumer created and subscribed to topic: {}", ServiceCoreIF.MetaDataClientRequestTopic);
+        return ServiceCoreIF.SUCCESS;
+      } 
+      catch( PulsarClientException e )
+      {
+        LOGGER.error( "Consumer creation exception. Error = - " + e.getMessage() );
+        cleanup();
+        throw e;
+      } 
+    }).onComplete(ar -> 
     {
-      LOGGER.error( "Consumer creation exception. Error = - " + e.getMessage() );
-      cleanup();
-      throw e;
-    } 
+      if( ar.succeeded() ) 
+      {
+        promise.complete(); // Complete the promise on success
+      }
+      else 
+      {
+        LOGGER.error("Worker execution failed: {}", ar.cause().getMessage());
+        promise.fail(ar.cause()); // Fail the promise on error
+      }
+    });
+    
+    return promise.future();
   }
 
   private void handleRequestMessage( Message<byte[]> msg )

@@ -31,8 +31,12 @@ metadata:
     component: proxy
   annotations:
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   ports:
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: sts-https
     - name: "pulsarssl"
       port: 6651
       protocol: TCP

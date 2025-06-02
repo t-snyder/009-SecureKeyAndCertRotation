@@ -7,9 +7,10 @@ import io.vertx.core.Vertx;
 import io.vertx.core.WorkerExecutor;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.json.JsonObject;
+
 import pulsar.WatcherPulsarClient;
 
-import org.bouncycastle.jcajce.SecretKeyWithEncapsulation;
+import org.bouncycastle.util.encoders.Hex;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,12 +24,12 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
+import svc.crypto.KyberKEMCrypto;
 import svc.model.KyberExchangeMessage;
-import svc.model.KyberKey;
+import svc.model.KyberInitiator;
 import svc.model.ServiceCoreIF;
 import svc.model.WatcherIF;
 import svc.model.WatcherMsgHeader;
-import svc.utils.MLKEMUtils;
 
 
 /**
@@ -42,48 +43,39 @@ public class KeyExchangeService
   private static final long DEFAULT_ROTATION_INTERVAL_MS = TimeUnit.HOURS.toMillis( 12 ); 
    
    // Thread-safe maps for key storage - String = Service ID, 
-  private final ConcurrentHashMap<String, KyberKey> activeKeys  = new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<String, KyberKey> priorKeys   = new ConcurrentHashMap<>();;
-  private final ConcurrentHashMap<String, KyberKey> inProcess   = new ConcurrentHashMap<>(); 
+  private final ConcurrentHashMap<String, KyberInitiator> activeKeys  = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, KyberInitiator> priorKeys   = new ConcurrentHashMap<>();;
+  private final ConcurrentHashMap<String, KyberInitiator> inProcess   = new ConcurrentHashMap<>(); 
 
-  // State tracking
-//  private boolean initialized  = false;
-//  private boolean shuttingDown = false;
-  private long    timerId;
-
-  // Key rotation configuration
+  private long timerId;
   private long keyRotationIntervalMs;
 
   // Reference to Vertx instance
-  private final Vertx         vertx;
+  private Vertx               vertx;
   private WatcherPulsarClient pulsarClient   = null;
   private WorkerExecutor      workerExecutor = null;
-  private List<String>        clientIds      = Arrays.asList( "metadatasvc" ); 
-  
-  private static volatile KeyExchangeService uniqueInstance;
+  private List<String>        clientIds      = Arrays.asList( "watcher" ); 
 
-  // Public method to provide access to the instance
-  public static KeyExchangeService getInstance( Vertx vertx, WatcherPulsarClient pulsarClient, long rotationIntervalMs ) 
+  private static volatile KeyExchangeService instance = null;
+
+  private KeyExchangeService() 
   {
-    if( uniqueInstance == null ) 
+      // Private constructor to prevent instantiation from outside the class
+  }
+
+  public static KeyExchangeService getInstance() 
+  {
+    if( instance == null ) 
     {
       synchronized( KeyExchangeService.class ) 
       {
-        if( uniqueInstance == null ) 
+        if( instance == null ) 
         {
-          uniqueInstance = new KeyExchangeService( vertx, pulsarClient, rotationIntervalMs );
+          instance = new KeyExchangeService();
         }
       }
     }
-    return uniqueInstance;
-  }
-  
-  private KeyExchangeService( Vertx vertx, WatcherPulsarClient pulsarClient, long rotationIntervalMs )
-  {
-    this.vertx        = vertx;
-    this.pulsarClient = pulsarClient;
-    
-    this.keyRotationIntervalMs = rotationIntervalMs > 0 ? rotationIntervalMs : DEFAULT_ROTATION_INTERVAL_MS;
+    return instance;
   }
 
 
@@ -92,10 +84,17 @@ public class KeyExchangeService
    * 
    * @return Future that completes when initialization is done
    */
-  public Future<Void> initialize()
+  public Future<Void> initialize( Vertx vertx, WatcherPulsarClient pulsarClient, long rotationIntervalMs )
   {
     Promise<Void> promise = Promise.promise();
 
+    this.vertx          = vertx;
+    this.pulsarClient   = pulsarClient;
+    this.workerExecutor = vertx.createSharedWorkerExecutor("key-exchange-handler", 2);
+        
+    this.keyRotationIntervalMs = rotationIntervalMs > 0 ? rotationIntervalMs : DEFAULT_ROTATION_INTERVAL_MS;
+ 
+    LOGGER.info( "KeyExchangeService starting initialize" );
     try
     {
       // Register event bus handlers for key rotation events
@@ -118,13 +117,14 @@ public class KeyExchangeService
   /**
    * Generates a new Kyber key pair
    */
-  private KyberKey generateNewKeyPair( String svcId )
+  private KyberInitiator generateNewKeyPair( String svcId )
   {
     LOGGER.info( "Generating new Kyber key pair for secret key rotation." );
     
     try
     {
-      return new KyberKey( svcId );
+      // Auto generate the keypair
+      return new KyberInitiator( svcId );
     } 
     catch( NoSuchAlgorithmException | NoSuchProviderException | InvalidAlgorithmParameterException e )
     {
@@ -140,26 +140,35 @@ public class KeyExchangeService
    */
   private void scheduleNextRotation()
   {
+    LOGGER.info( "KeyExchangeService.scheduleNextRotation - start" );
+    
     timerId = vertx.setTimer( keyRotationIntervalMs, id -> 
     {
-      LOGGER.info( "Executing scheduled key rotation" );
+      LOGGER.info( "KeyExchangeService.scheduleNextRotation - Executing scheduled key rotation" );
 
-      try
+      workerExecutor.executeBlocking(() -> 
       {
         inProcess.clear();
-        for( String svcId : clientIds )
+        for( String svcId : clientIds ) 
         {
-          inititateKyberKeyRotation( svcId );
+          initiateKyberKeyRotation(svcId);
         }
-      }
-      catch( Exception e )
-      {
         
-      }
-
-      // Schedule the next rotation
-      scheduleNextRotation(); // Recursive call
-    } );
+        return ServiceCoreIF.SUCCESS;
+      }, false, result -> 
+         {
+           if( result.succeeded() ) 
+           {
+             scheduleNextRotation(); // Reschedule on event loop
+           } 
+           else 
+           {
+             String errMsg = "KeyExchangeService.scheduleNextRotation - Key rotation failed" + result.cause();
+             LOGGER.error( errMsg );
+             throw new RuntimeException( errMsg );
+           }
+         });
+    });
   }
 
   /**
@@ -171,27 +180,21 @@ public class KeyExchangeService
       String result = handleKeyExchange( message );
       message.reply(result);
     });
- 
-   // Handler for rotation requests
-    vertx.eventBus().consumer( "watcher.keyRotation.request", (Message<byte[]> message) -> 
-    {
-      LOGGER.info( "Received key rotation request" );
-      generateEncapsulation( message );
-      message.reply( new JsonObject().put( "status", "success" ));
-    });
 
-    // Handler for key exchange responses
+    // Handler for key exchange responses - sent from PulsarConsumerVert.createKeyExchangeMessageListener
     vertx.eventBus().consumer( "watcher.keyExchange.response", (Message<byte[]> message) ->
     {
       LOGGER.info( "Received key exchange/rotation response" );
       processExchangeResponse( message );
       message.reply( new JsonObject().put( "status", "success" ));
-    } );
+    });
   }
 
+  
   private String handleKeyExchange( Message<byte[]> msg )
   {
-    LOGGER.info("EventBusHandler.handleKeyExchange() - Starting key exchange request");
+    LOGGER.info( "=====================================================================" );
+    LOGGER.info("KeyExchangeService.handleKeyExchange() - Starting key exchange request");
 
     workerExecutor.executeBlocking(() -> 
     {
@@ -204,60 +207,69 @@ public class KeyExchangeService
                                                    .put( "msgKey",  WatcherIF.KyberMsgKey )
                                                    .put( "msgBody", msg.body() );
 
+        // pulsar.keyProducer consumer is in PulsarProducerVert
         vertx.eventBus().send("pulsar.keyProducer", jsonMsg );
       }
       catch( Exception e )
       {
-        LOGGER.error( "EventBusHandler.handleKeyExchange() - Error sending message with msgKey " + WatcherIF.KyberMsgKey + ". Error = " + e.getMessage() );
+        LOGGER.error( "KeyExchangeService.handleKeyExchange() - Error sending message with msgKey " + WatcherIF.KyberMsgKey + ". Error = " + e.getMessage() );
       }
 
-      LOGGER.info("EventBusHandler.handleKeyExchange() - Key exchange request processed successfully");
+      LOGGER.info( "===================================================================================" );
+      LOGGER.info("KeyExchangeService.handleKeyExchange() - Key exchange request processed successfully");
       return ServiceCoreIF.SUCCESS;
     });  
 
-    LOGGER.info("EventBusHandler.handleKeyExchange() - Key exchange request processed successfully");
     return ServiceCoreIF.SUCCESS;
   }
   
   private void processExchangeResponse( Message<byte[]> message )
   {
+    LOGGER.info( "KeyExchangeService.processExchangeResponse - received eventBus message. Starting processing.");
     try
     {
       byte[]               msgBytes = message.body();
-      KyberExchangeMessage kyberMsg = KyberExchangeMessage.deserialize( msgBytes );
+      KyberExchangeMessage kyberMsg = KyberExchangeMessage.deSerialize( msgBytes );
 
-      if( kyberMsg.getEncapsulation() == null || kyberMsg.getEncapsulation().length == 0 ) 
+      try
       {
-        String errMsg = "KeyExchangeHandler.handleKeyExchangeResponse() Received empty key exchange response";
-        LOGGER.error( errMsg );
-        throw new IllegalArgumentException( errMsg );
+        LOGGER.info( "=================================================");
+        LOGGER.info( "KyberExchangeMessage contents for KeyExchangeService.processExchangeResponse " );
+        LOGGER.info( "svcId         = " + kyberMsg.getSvcId() );
+        LOGGER.info( "eventType     = " + kyberMsg.getEventType() );
+        LOGGER.info( "publicKey     = " + kyberMsg.getPublicKey() );
+        LOGGER.info( "encapsulation = " + kyberMsg.getEncapsulation() );
+        LOGGER.info( "Encapsulation length: " + kyberMsg.getEncapsulation().length + " bytes" );
+        LOGGER.info( "Encapsulation (hex):  " + Hex.toHexString( kyberMsg.getEncapsulation() ) );
+        LOGGER.info( "=================================================");
+      } 
+      catch( Exception e )
+      {
+        // TODO Auto-generated catch block
+        e.printStackTrace();
       }
 
-      KyberKey key = inProcess.get( kyberMsg.getSvcId() );
+      KyberInitiator key = pulsarClient.getInProcessKey(); 
       if( key == null )
       {
-        String errMsg = "KeyRotationManager.registerEventBusHandlers() Received empty key exchange response";
+        String errMsg = "KeyExchangeService.processExchangeResponse Could not find KyberKey";
         LOGGER.error( errMsg );
         throw new IllegalArgumentException( errMsg );
       }
 
-      SecretKeyWithEncapsulation sharedKeyWithEnc = MLKEMUtils.generateSecretKeyReceiver(
-                                                                 key.getPrivateKey(), 
-                                                                 kyberMsg.getEncapsulation() );
+      LOGGER.info( "KeyExchangeService.processExchangeResponse - creating secret key with encapsulation." );
+      byte[] sharedKey = KyberKEMCrypto.generateSecretKeyInitiator( key.getPrivateKey(), 
+                                                                    kyberMsg.getEncapsulation() );
                 
-      if( sharedKeyWithEnc == null ) 
+      if( sharedKey == null ) 
       {
-        throw new IllegalStateException("Failed to generate shared secret key");
+        throw new IllegalStateException("KeyExchangeService.processExchangeResponse Failed to generate shared secret key");
       }
   
-      key.setEncapsulatedKey( sharedKeyWithEnc );
+      LOGGER.info( "KeyExchangeService.processExchangeResponse - generated sharedKey = " + Arrays.toString( sharedKey ));
+      key.setSharedSecret( sharedKey );
 
-      if( activeKeys.contains( kyberMsg.getSvcId() )) 
-      { 
-        priorKeys.put( kyberMsg.getSvcId(), activeKeys.get( kyberMsg.getSvcId() ));
-      }
-
-      activeKeys.put( kyberMsg.getSvcId(), key );
+      putActiveKey( kyberMsg.getSvcId(), key );
        
       if( kyberMsg.getSvcId().equalsIgnoreCase( "watcher" ))
       {
@@ -265,11 +277,13 @@ public class KeyExchangeService
       
         if( kyberMsg.getEventType().equalsIgnoreCase( WatcherIF.KyberKeyResponse ))
         {
-          vertx.eventBus().send("watcher.keyExchange.complete", ServiceCoreIF.SUCCESS );
+          LOGGER.info( "KeyExchangeService.processExchangeResponse sending result to eventBus 'watcher.keyExchange.complete'");
+          //Consumer is WatcherServiceMain.waitForKeyExchange
+          vertx.eventBus().send("watcher.keyExchange.complete", ServiceCoreIF.SUCCESS.getBytes() );
         }
       }
       
-      message.reply( "success" );
+      message.reply( ServiceCoreIF.SUCCESS );
     } 
     catch( Exception e )
     {
@@ -278,220 +292,62 @@ public class KeyExchangeService
     }
   }
   
-  private void inititateKyberKeyRotation( String svcId )
+  private void initiateKyberKeyRotation( String svcId )
    throws Exception
   {
-    workerExecutor = vertx.createSharedWorkerExecutor( "watcher-worker", 2, 360000 );
-
-    try 
-    {
-      workerExecutor.executeBlocking( () -> 
-      {
-        try
-        {
-          // Generate new key pair
-          KyberKey kyberKey = generateNewKeyPair( svcId );
-          inProcess.put( svcId, kyberKey );
-
-          byte[]               keyEncoded = MLKEMUtils.encodePublicKey( kyberKey.getPublicKey() );
-          KyberExchangeMessage msgObj     = new KyberExchangeMessage( svcId, WatcherIF.KyberRotateRequest, keyEncoded );
-          byte[]               msgBytes   = KyberExchangeMessage.serialize( msgObj );
+    LOGGER.info( "KeyExchangeService.initiateKyberKeyRotation starting with svcId = " + svcId );
  
-          WatcherMsgHeader header  = new WatcherMsgHeader( null, WatcherIF.KyberRotateRequest, UUID.randomUUID().toString(), Instant.now().toString(), "1.0" );
-          JsonObject       jsonMsg = new JsonObject().put( "headers", header.toJson())
-                                                     .put( "msgKey",  WatcherIF.KyberRotateKey )
-                                                     .put( "msgBody", msgBytes );
+    // Generate new key pair
+    KyberInitiator kyberKey = generateNewKeyPair( svcId );
+    inProcess.put( svcId, kyberKey );
 
-          vertx.eventBus().send("pulsar.keyProducer", jsonMsg );
-        } 
-        catch( Exception e )
-        {
-          String msg = "Fatal error initializing Pulsar client. Stopping verticle.";
-          LOGGER.error( msg );
-          throw e;
-        }
-           
-        return ServiceCoreIF.SUCCESS;
-      }, result -> 
-         {
-           if( result.succeeded() )
-           {
-             LOGGER.info( "Pulsar client initialized successfully." );
-           }
-           else
-           {
-             String msg = "Error initializing Pulsar client. Stopping verticle.";
-             LOGGER.error( msg );
-           }
-           return;
-         }
-      );
-    }
-    catch( Exception e )
-    {
-      String msg = "Error initializing Pulsar client. Stopping verticle.";
-      LOGGER.error( msg );
-      throw e;
-    }   
-
-    LOGGER.info( "WatcherServiceMain - requestKyberKeyRotation completed - eventBus msg published" );
-  }
-
-/**  
-  private Future<String> waitForKeyExchange() 
-  {
-    Promise<String> keyRotationPromise = Promise.promise();
-    
-    // Create event bus consumer with proper lifecycle management
-    final String address   = "watcher.keyRotation.complete";
-    final long   timeoutMs = 30000; // 30 seconds timeout
-    
-    // Set up a timer for the timeout
-    final long timerId = vertx.setTimer( timeoutMs, id -> 
-    {
-      if( !keyRotationPromise.future().isComplete() ) 
-      {
-        String msg = "Timeout waiting for key rotation completion after " + timeoutMs + "ms";
-        LOGGER.error(msg);
-        keyRotationPromise.fail(msg);
-      }
-    });
-    
-    // Create the consumer and register completion handler
-    final MessageConsumer<String> consumer = vertx.eventBus().consumer( address, message -> 
-    {
-      try 
-      {
-        LOGGER.info("Key rotation completion message received");
-        String result = message.body();
-        
-        // Cancel the timeout timer
-        vertx.cancelTimer( timerId );
-        
-        // Process the completion and reply to the sender
-        if( ServiceCoreIF.SUCCESS.equals( result )) 
-        {
-          message.reply(ServiceCoreIF.SUCCESS);
-          keyRotationPromise.complete(result);
-          LOGGER.info("Key exchange completed successfully");
-        } 
-        else 
-        {
-          String errorMsg = "Key exchange failed with result: " + result;
-          LOGGER.error(errorMsg);
-          keyRotationPromise.fail(errorMsg);
-        }
-      } 
-      catch( Exception e ) 
-      {
-        LOGGER.error("Error handling key exchange completion", e);
-        keyRotationPromise.fail(e);
-      }
-    });
-    
-    // Ensure proper cleanup on completion
-    keyRotationPromise.future().onComplete(ar -> 
-    {
-      // Unregister the consumer
-      consumer.unregister().onComplete(unregResult -> 
-      {
-        if( unregResult.succeeded() ) 
-        {
-          LOGGER.debug("Key rotation consumer unregistered successfully");
-        } 
-        else 
-        {
-          LOGGER.warn("Failed to unregister key rotation consumer", unregResult.cause());
-        }
-      });
-      
-      // Always cancel the timer to prevent memory leaks
-      vertx.cancelTimer(timerId);
-      
-      vertx.runOnContext(v -> 
-      {
-        consumer.unregister().onComplete(unregResult -> 
-        {
-          if( unregResult.succeeded() ) 
-          {
-            LOGGER.debug("Key rotation response consumer unregistered successfully");
-          }
-          else 
-          {
-            LOGGER.warn("Failed to unregister key rotation response consumer", unregResult.cause());
-          }
-        });
-      });
+    byte[]               keyEncoded = KyberKEMCrypto.encodePublicKey( kyberKey.getPublicKey() );
+    KyberExchangeMessage msgObj     = new KyberExchangeMessage( svcId, WatcherIF.KyberRotateRequest, keyEncoded );
+    byte[]               msgBytes   = KyberExchangeMessage.serialize( msgObj );
  
-      if( ar.succeeded() ) 
-      {
-        LOGGER.info("Key rotation completed successfully");
-      } 
-      else 
-      {
-        LOGGER.error("Key rotation failed: {}", ar.cause().getMessage());
-      }
-    });
-    
-    return keyRotationPromise.future();
-  }
-**/
-/**  
-  public void handleKeyExchangeResponse( Message<byte[]> msg ) 
+    WatcherMsgHeader header  = new WatcherMsgHeader( null, WatcherIF.KyberRotateRequest, UUID.randomUUID().toString(), Instant.now().toString(), "1.0" );
+    JsonObject       jsonMsg = new JsonObject().put( "headers", header.toJson())
+                                               .put( "msgKey",  WatcherIF.KyberRotateKey )
+                                               .put( "msgBody", msgBytes );
+ 
+    vertx.eventBus().send("pulsar.keyProducer", jsonMsg );
+    LOGGER.info( "KeyExchangeService.initiateKyberKeyRotation compeleted and send 'pulsar.keyProducer event msg for svcId = " + svcId );
+  } 
+
+  /**
+   * Obtain current encryption key for pulsar messages to the requested service
+   * 
+   */
+  public KyberInitiator getActiveKey( String svc )
   {
-    LOGGER.info("KeyExchangeHandler - Processing key exchange response");
+    LOGGER.info( "KeyExchangeService.getActiveKey() - looking for key = " + svc );
 
-    try 
-    {
-      String eventType     = msg.getProperty( WatcherIF.WatcherHeaderEventType );
-      byte[] kyberMsgBytes = msg.getData();
-
-      KyberExchangeMessage kyberMsg = KyberExchangeMessage.deserialize( kyberMsgBytes );
-      
-      if( kyberMsg.getEncapsulation() == null || kyberMsg.getEncapsulation().length == 0 ) 
-      {
-        String errMsg = "KeyExchangeHandler.handleKeyExchangeResponse() Received empty key exchange response";
-        LOGGER.error( errMsg );
-        throw new IllegalArgumentException( errMsg );
-      }
-
-      SecretKeyWithEncapsulation sharedKeyWithEnc = MLKEMUtils.generateSecretKeyReceiver(
-                                                                 watcherClient.getPrivateKey(), 
-                                                                 kyberMsg.getEncapsulation() );
-                
-      if( sharedKeyWithEnc == null ) 
-      {
-        throw new IllegalStateException("Failed to generate shared secret key");
-      }
-
-      
-      watcherClient.setSharedSecretKey(sharedKeyWithEnc);
-      LOGGER.info("Key exchange completed successfully");
-
-      if( eventType.contentEquals( WatcherIF.KyberResponse ))
-      {
-        // Notify via event bus that key exchange is complete
-        vertx.eventBus().publish( "watcher.keyExchange.complete", kyberMsgBytes );
-      }
-      else if( eventType.contentEquals( WatcherIF.KyberResponse ))
-      {
-        // Notify via event bus that key rotation is complete
-        vertx.eventBus().publish( "watcher.keyRotation.complete", kyberMsgBytes );
-      }
-    } 
-    catch( NoSuchAlgorithmException | NoSuchProviderException | InvalidAlgorithmParameterException | ClassNotFoundException | IOException e ) 
-    {
-      String errorMsg = "Cryptographic error during key exchange: " + e.getMessage();
-      LOGGER.error(errorMsg);
-      throw new RuntimeException(errorMsg, e);
+    KyberInitiator key = activeKeys.get( svc );
+ 
+    LOGGER.info( "KeyExchangeService.putActiveKey() - key.svcId = " + key.getSvcId() );
+    LOGGER.info( "KeyExchangeService.putActiveKey() - key.publicKey = " + Arrays.toString( key.getPublicKeyEncoded() ));
+    LOGGER.info( "KeyExchangeService.putActiveKey() - key.sharedSecret = " + Arrays.toString( key.getSharedSecret() ));
+    
+    if( activeKeys.containsKey( svc ))
+      return activeKeys.get( svc );
+    
+    return null;
+  }
+ 
+  public void putActiveKey( String svcId, KyberInitiator key )
+  {
+    LOGGER.info( "KeyExchangeService.putActiveKey() - svcId = " + svcId );
+    LOGGER.info( "KeyExchangeService.putActiveKey() - key.publicKey = " + Arrays.toString( key.getPublicKeyEncoded() ));
+    LOGGER.info( "KeyExchangeService.putActiveKey() - key.sharedSecret = " + Arrays.toString( key.getSharedSecret() ));
+  
+    if( activeKeys.contains( svcId )) 
+    { 
+      priorKeys.put( svcId, activeKeys.get( svcId ));
     }
-  }
-**/  
-  private void generateEncapsulation( Message<byte[]> msg )
-  {
+
+    activeKeys.put( svcId, key );
     
   }
-
   /**
    * Shutdown the key rotation manager
    */

@@ -37,11 +37,15 @@ public class PulsarTLSClient
       LOGGER.error( msg );
       throw new IllegalArgumentException( msg );
     }
-    
-    this.pulsarUseTLS     = Boolean.getBoolean( config.get( MetadataSvcIF.PulsarUseTLS ));
+  
+
+    this.pulsarUseTLS     = true;
     this.pulsarUrls       = config.get( MetadataSvcIF.PulsarUrls );
     this.pulsarCaCertPath = config.get( MetadataSvcIF.PulsarCACertPath);
     this.clientSecretName = config.get( MetadataSvcIF.PulsarClientSecret );
+
+    LOGGER.info( "**** Config useTLS = " + config.get( MetadataSvcIF.PulsarUseTLS ));
+    LOGGER.info( "*** UseTLS = " + pulsarUseTLS + "; url = " + pulsarUrls + "; caCertPath = " + pulsarCaCertPath + "; secret name = " + clientSecretName );
 
     if( clientSecretName == null || clientSecretName.length() == 0 )
     {

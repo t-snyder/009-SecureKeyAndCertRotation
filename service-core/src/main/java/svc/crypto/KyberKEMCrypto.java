@@ -6,7 +6,7 @@
  * https://medium.com/@hwupathum/using-crystals-kyber-kem-for-hybrid-encryption-with-java-0ab6c70d41fc
  */
 
-package svc.utils;
+package svc.crypto;
 
 
 import org.bouncycastle.jcajce.SecretKeyWithEncapsulation;
@@ -42,7 +42,7 @@ import javax.crypto.spec.GCMParameterSpec;
  * 4. The server ( metadataSvc ) sends the encapsulated key back to the client ( pulsarWatcher ). External to this class. 
  * 5. The client ( pulsarWatcher ) extracts the encapsulated key into a SecretKeyWithEncapsulation using generateSecretKeyReciever().
  */
-public class MLKEMUtils
+public class KyberKEMCrypto
 {
   public static final AlgorithmParameterSpec KEM_PARAMETER_SPEC = KyberParameterSpec.kyber1024;
   private static final String PROVIDER             = "BCPQC";
@@ -81,9 +81,10 @@ public class MLKEMUtils
     return keyPairGenerator.generateKeyPair();
   }
 
-  public static SecretKeyWithEncapsulation generateSecretKeySender( PublicKey publicKey ) throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException
+  public static SecretKeyWithEncapsulation generateSecretKeyResponder( PublicKey publicKey ) 
+   throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException
   {
-    KeyGenerator keyGenerator = KeyGenerator.getInstance( KEM_ALGORITHM, PROVIDER );
+    KeyGenerator    keyGenerator    = KeyGenerator.getInstance( KEM_ALGORITHM, PROVIDER );
     KEMGenerateSpec kemGenerateSpec = new KEMGenerateSpec( publicKey, "Secret", 256 );
 
     keyGenerator.init( kemGenerateSpec );
@@ -91,34 +92,18 @@ public class MLKEMUtils
     return (SecretKeyWithEncapsulation)keyGenerator.generateKey();
   }
 
-  public static SecretKeyWithEncapsulation generateSecretKeyReceiver( PrivateKey privateKey, byte[] encapsulation ) 
+  public static byte[] generateSecretKeyInitiator( PrivateKey privateKey, byte[] encapsulation ) 
    throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException
   {
     KEMExtractSpec kemExtractSpec = new KEMExtractSpec( privateKey, encapsulation, "Secret", 256 );
-    KeyGenerator keyGenerator = KeyGenerator.getInstance( KEM_ALGORITHM, PROVIDER );
+    KeyGenerator   keyGenerator   = KeyGenerator.getInstance( KEM_ALGORITHM, PROVIDER );
 
     keyGenerator.init( kemExtractSpec );
-
-    return (SecretKeyWithEncapsulation)keyGenerator.generateKey();
+    
+    SecretKeyWithEncapsulation result = (SecretKeyWithEncapsulation)keyGenerator.generateKey();
+    return result.getEncoded();
   }
 
-  /**
-   * 
-   * @param plainText
-   * @param key  - Obtained via SecretKeyWtihEncapsulation.getEncoded() returned from method generateSecretKeySender()
-   * @return
-   * @throws Exception
-  public static String encrypt( String plainText, byte[] key ) 
-   throws Exception
-  {
-    SecretKeySpec secretKey = new SecretKeySpec( key, ENCRYPTION_ALGORITHM );
-    Cipher cipher = Cipher.getInstance( MODE_PADDING );
-    cipher.init( Cipher.ENCRYPT_MODE, secretKey );
-    byte[] encryptedBytes = cipher.doFinal( plainText.getBytes() );
-    return Base64.getEncoder().encodeToString( encryptedBytes );
-  }
- */
- 
   
   /**
    * Encrypt with AES/GCM
@@ -219,13 +204,13 @@ public class MLKEMUtils
     return keyFactory.generatePrivate( keySpec );
   }
   
-  public static SecretKeyWithEncapsulation processKyberExchangeRequest( byte[] data )
+  public static SecretKeyWithEncapsulation processKyberExchangeRequest( byte[] keyData )
    throws Exception
   {
-    byte[]    decodedBytes  = Base64.getDecoder().decode( data );
+//    byte[] decodedBytes  = Base64.getDecoder().decode( data );
        
-    PublicKey                  publicKey     = MLKEMUtils.decodePublicKey( decodedBytes );
-    SecretKeyWithEncapsulation encapsulation = MLKEMUtils.generateSecretKeySender( publicKey );
+    PublicKey                  publicKey     = KyberKEMCrypto.decodePublicKey( keyData );
+    SecretKeyWithEncapsulation encapsulation = KyberKEMCrypto.generateSecretKeyResponder( publicKey );
        
     return encapsulation;
   }

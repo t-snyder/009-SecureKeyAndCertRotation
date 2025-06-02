@@ -2,23 +2,21 @@ package pulsar;
 
 
 import java.security.InvalidAlgorithmParameterException;
-import java.security.KeyPair;
 import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
-import java.security.PrivateKey;
-import java.security.PublicKey;
 
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
-import org.bouncycastle.jcajce.SecretKeyWithEncapsulation;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.fabric8.kubernetes.client.KubernetesClient;
-import svc.model.KyberKey;
+import svc.crypto.KyberKEMCrypto;
+import svc.model.KyberInitiator;
 import svc.model.WatcherConfig;
 import svc.model.WatcherIF;
-import svc.utils.MLKEMUtils;
+
 import utils.WaitOnPulsarReady;
 
 
@@ -39,12 +37,12 @@ public class WatcherPulsarClient
   private String  podName     = null;
 
   // Runtime vars
-  private PulsarClient pulsarClient = null;
-  private boolean      pulsarReady  = false;
+  private PulsarClient    pulsarClient = null;
+  private boolean         pulsarReady  = false;
 
-  private KyberKey     currentKey   = null;
-  private KyberKey     priorKey     = null;
-  private KyberKey     inProcessKey = null;
+  private KyberInitiator  currentKey   = null;
+  private KyberInitiator  priorKey     = null;
+  private KyberInitiator  inProcessKey = null;
   
   
   public WatcherPulsarClient( KubernetesClient client, WatcherConfig config, String nameSpace, String podName ) 
@@ -121,9 +119,19 @@ public class WatcherPulsarClient
 
   
   private void genKyberKeyPair() 
-   throws NoSuchAlgorithmException, NoSuchProviderException, InvalidAlgorithmParameterException
   {
-    inProcessKey = new KyberKey( "watcher", MLKEMUtils.generateKeyPair() );
+    try
+    {
+      LOGGER.info( "WatcherPulsarClient.genKyberKeyPair() - Start" );
+      inProcessKey = new KyberInitiator( "watcher", KyberKEMCrypto.generateKeyPair() );
+    
+    }
+    catch( NoSuchAlgorithmException | NoSuchProviderException | InvalidAlgorithmParameterException e)
+    {
+      String errMsg = "WatcherPulsarClient.gehKyberKeyPair() - Error gnerating key pair. Error = " + e.getMessage();
+      LOGGER.error( errMsg );
+      throw new RuntimeException( errMsg );
+    }
   }
 
   public void closePulsarClient()
@@ -142,16 +150,16 @@ public class WatcherPulsarClient
     LOGGER.info( "WatcherPulsarClient.closePulsarClient() - Pulsar client closed." );
   }
   
-  public PulsarClient getPulsarClient()  { return pulsarClient;  }
-  public String       getPulsarTopic()   { return pulsarTopic;   }
-  public String       getExchangeTopic() { return exchangeTopic; }
-  public String       getNameSpace()     { return nameSpace;     }
+  public PulsarClient   getPulsarClient()  { return pulsarClient;  }
+  public String         getPulsarTopic()   { return pulsarTopic;   }
+  public String         getExchangeTopic() { return exchangeTopic; }
+  public String         getNameSpace()     { return nameSpace;     }
 
-  public KyberKey     getCurrentKey()    { return currentKey;    }
-  public KyberKey     getPriorKey()      { return priorKey;      }
-  public KyberKey     getInProcessKey()  { return inProcessKey;  }
+  public KyberInitiator getCurrentKey()    { return currentKey;    }
+  public KyberInitiator getPriorKey()      { return priorKey;      }
+  public KyberInitiator getInProcessKey()  { return inProcessKey;  }
   
-  public void setCurrentKey( KyberKey key ) 
+  public void setCurrentKey( KyberInitiator key ) 
   {
     if( currentKey != null )
     {

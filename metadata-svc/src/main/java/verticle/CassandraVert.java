@@ -45,7 +45,7 @@ public class CassandraVert extends AbstractVerticle
 //  private static final String userId   = "cassandra";
   private static final String pwd      = "cassandra";
   private static final String dc       = "datacenter1";
-  private static final String certPath = "/media/tim/ExtraDrive1/Projects/deploy-08-cassandra/proto-cass/src/main/resources/tls.crt";
+  private static final String certPath = "/media/tim/ExtraDrive1/Projects/009-SecureKeyAndCertRotation/proto-cass/src/main/resources/tls.crt";
 
   private CqlSession        session;
 
@@ -100,7 +100,7 @@ public class CassandraVert extends AbstractVerticle
         session = CqlSession.builder().addContactPoint( new InetSocketAddress( contactPoint, port ) )
                                       .withLocalDatacenter( dc )
                                       .withAuthCredentials( "cassandra", pwd )
-                                      .withSslContext( SSLContextBuilder.build( certPath ))
+//                                      .withSslContext( SSLContextBuilder.build( certPath ))
                                       .build();
         
         // Create keyspace and table if they don't exist

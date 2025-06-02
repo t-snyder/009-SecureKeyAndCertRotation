@@ -23,19 +23,20 @@ import io.vertx.core.AsyncResult;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
+import io.vertx.core.Vertx;
 import io.vertx.core.WorkerExecutor;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.json.JsonObject;
 
 import service.MetadataService;
+import svc.crypto.KyberKEMCrypto;
+import svc.handler.SharedSecretManager;
 
 import svc.model.KyberExchangeMessage;
-import svc.model.KyberKey;
 import svc.model.ServiceCoreIF;
 import svc.model.WatcherIF;
-import svc.pulsar.PulsarConsumerErrorHandler;
 
-import svc.utils.MLKEMUtils;
+import svc.pulsar.PulsarConsumerErrorHandler;
 
 
 public class WatcherKeyRequestConsumerVert extends AbstractVerticle
@@ -43,17 +44,22 @@ public class WatcherKeyRequestConsumerVert extends AbstractVerticle
   private static final Logger LOGGER                   = LoggerFactory.getLogger( WatcherKeyRequestConsumerVert.class );
   private static final String WATCHER_KEY_SUBSCRIPTION = "watcher-key-subscription";
 
+  private static Vertx vertx;
+  
   private MetadataService  metaDataSvc    = null;
   private PulsarClient     pulsarClient   = null;
   private WorkerExecutor   workerExecutor = null;
   private Consumer<byte[]> keyConsumer    = null;
 
-  private PulsarConsumerErrorHandler errHandler = new PulsarConsumerErrorHandler();
+  private PulsarConsumerErrorHandler errHandler    = new PulsarConsumerErrorHandler();
+  private SharedSecretManager        encKeyManager = null;
   
-  public WatcherKeyRequestConsumerVert( PulsarClient pulsarClient, MetadataService svc )
+  public WatcherKeyRequestConsumerVert( Vertx vertx, PulsarClient pulsarClient, MetadataService svc )
   {
-    this.pulsarClient = pulsarClient;
-    this.metaDataSvc  = svc;
+    this.vertx         = vertx;
+    this.pulsarClient  = pulsarClient;
+    this.metaDataSvc   = svc;
+    this.encKeyManager = new SharedSecretManager( vertx );
   }
 
   @Override
@@ -115,72 +121,96 @@ public class WatcherKeyRequestConsumerVert extends AbstractVerticle
     }
   }
 
-
-  private void startKeyConsumer() throws PulsarClientException
+  /**
+   * Message listener for key exchange responses
+   */
+  private MessageListener<byte[]> createKeyExchangeMessageListener() 
   {
-    MessageListener<byte[]> keyMsgListener = ( consumer, msg ) -> 
+    return (consumer, msg) -> 
     {
-      Future<String> result = workerExecutor.executeBlocking( () -> 
+      workerExecutor.executeBlocking(() -> 
       {
-        try
+        try 
         {
-          handleKeyExchangeRequest( msg );
-          consumer.acknowledge( msg );
-          LOGGER.info( "keyConsumer - Message Received and Ack'd - " + new String( msg.getData() ) );
-          return ServiceCoreIF.SUCCESS;
+            handleKeyExchangeRequest( msg );
+            consumer.acknowledge( msg );
+            LOGGER.info( "keyConsumer - Message Received and Ack'd - " );
+            return ServiceCoreIF.SUCCESS;
         } 
-        catch( Throwable t )
+        catch( Throwable t ) 
         {
-          LOGGER.error( "Error processing message. Error = " + t.getMessage() );
- 
-          // Handle unrecoverable errors
+          LOGGER.error("Error processing key exchange response: {}", t.getMessage(), t);
+          
           if( errHandler.isUnrecoverableError(t) ) 
           {
-            LOGGER.error( "Unrecoverable error detected. Deploying recovery procedure.");
-            consumer.negativeAcknowledge(msg);
+            LOGGER.error("Unrecoverable error detected. Deploying recovery procedure.");
             initiateRecovery();
           }
           throw t;
         }
-      } );
-      
-      if( result.failed() )
-      {
-        LOGGER.error( "Worker execution failed: " + result.cause().getMessage() );
-        errHandler.handleMessageProcessingFailure( pulsarClient, keyConsumer, msg, result.cause());
-      }
+      }).onComplete(ar -> 
+        {
+          if( ar.failed() ) 
+          {
+            LOGGER.error("Worker execution failed: {}", ar.cause().getMessage());
+            errHandler.handleMessageProcessingFailure(pulsarClient, consumer, msg, ar.cause());
+          }
+        });
     };
-
-    try
-    {
-      keyConsumer = pulsarClient.newConsumer().topic( WatcherIF.KeyExchangeRequestTopic )
-                                              .subscriptionName( WATCHER_KEY_SUBSCRIPTION )
-                                              .subscriptionType( SubscriptionType.Shared )
-                                              .messageListener( keyMsgListener )
-                                              .ackTimeout( 10, TimeUnit.SECONDS ) // Automatic
-                                              .subscribe();
-      LOGGER.info("Metadata request consumer created and subscribed to topic: {}", 
-                   WatcherIF.KeyExchangeRequestTopic );
-    } 
-    catch( PulsarClientException e )
-    {
-      LOGGER.error( "Consumer creation exception. Error = - " + e.getMessage() );
-
-      cleanup();
-      throw e;
-    }
   }
+
+  private String startKeyConsumer() 
+   throws PulsarClientException
+  {
+    LOGGER.info("WatcherKeyRequestConsumerVert.startKeyConsumer() - Starting key exchange response consumer");
+
+    workerExecutor.executeBlocking(() -> 
+    {
+      try
+      {
+        MessageListener<byte[]> keyMsgListener = createKeyExchangeMessageListener();
+       
+        keyConsumer = pulsarClient.newConsumer().topic( ServiceCoreIF.KeyExchangeRequestTopic )
+                                                .subscriptionName( WATCHER_KEY_SUBSCRIPTION )
+                                                .subscriptionType( SubscriptionType.Shared )
+                                                .messageListener( keyMsgListener )
+                                                .ackTimeout( 10, TimeUnit.SECONDS ) // Automatic
+                                                .subscribe();
+        LOGGER.info("Metadata request consumer created and subscribed to topic: {}", 
+                     ServiceCoreIF.KeyExchangeRequestTopic );
+        return ServiceCoreIF.SUCCESS;
+      } 
+      catch( PulsarClientException e )
+      {
+        LOGGER.error( "Consumer creation exception. Error = - " + e.getMessage() );
+
+        cleanup();
+        throw e;
+      }
+    }).onComplete(ar -> 
+    {
+      if( ar.failed() ) 
+      {
+        LOGGER.error("Worker execution failed: {}", ar.cause().getMessage());
+        throw new RuntimeException( ar.cause() );
+      } 
+    });
+    
+    return ServiceCoreIF.SUCCESS;
+  };
 
   private void handleKeyExchangeRequest( Message<byte[]> msg ) 
    throws Exception
   {
-    EventBus eventBus = vertx.eventBus();
+    LOGGER.info( "========================================================================" );
+    LOGGER.info( "WatcherKeyRequestConsumer.handleKeyExchangeRequest received request msg." );
+	  EventBus eventBus = vertx.eventBus();
     String eventType  = WatcherIF.KyberKeyRequest;
 
-    KyberExchangeMessage kyberMsg = KyberExchangeMessage.deserialize( msg.getData() );
+    KyberExchangeMessage kyberMsg = KyberExchangeMessage.deSerialize( msg.getData() );
     if( kyberMsg == null )
     {
-      String errMsg = "Could not deserialize msg.";
+      String errMsg = "WatcherKeyRequestConsumer.handleKeyExchangeRequest Could not deserialize msg.";
       LOGGER.error( errMsg );
       throw new RuntimeException( errMsg );
     }
@@ -192,7 +222,9 @@ public class WatcherKeyRequestConsumerVert extends AbstractVerticle
       if( props.containsKey( WatcherIF.WatcherHeaderEventType ) )
         eventType = props.get( WatcherIF.WatcherHeaderEventType );
     }
-    
+ 
+    LOGGER.info( "WatcherKeyRequestConsumer.handleKeyExchangeRequest eventType received is " + eventType );
+
     if( eventType == null )
     {
       String errMsg = "Message event type not found.";
@@ -203,11 +235,14 @@ public class WatcherKeyRequestConsumerVert extends AbstractVerticle
     if( eventType.compareTo( WatcherIF.KyberKeyRequest ) == 0  ||
         eventType.compareTo( WatcherIF.KyberRotateRequest ) == 0 )
     {
-      SecretKeyWithEncapsulation encapsulation = MLKEMUtils.processKyberExchangeRequest( kyberMsg.getPublicKey() );
-      PublicKey publicKey = MLKEMUtils.decodePublicKey( kyberMsg.getPublicKey() );
-      KyberKey  kyberKey  = new KyberKey( kyberMsg.getSvcId(), publicKey, encapsulation );
+      LOGGER.info( "WatcherKeyRequestConsumer.handleKeyExchangeRequest generating the Secret with encapsulation.");
+      PublicKey                  publicKey     = KyberKEMCrypto.decodePublicKey( kyberMsg.getPublicKey() );
+      SecretKeyWithEncapsulation encapsulation = KyberKEMCrypto.processKyberExchangeRequest( KyberKEMCrypto.encodePublicKey( publicKey ) );
+//      KyberResponder             kyberKey      = new KyberResponder( kyberMsg.getSvcId(), publicKey, encapsulation );
+
+      encKeyManager.putSecretBytes( kyberMsg.getSvcId(), encapsulation.getEncoded() );
       
-      metaDataSvc.setWatcherKey( kyberKey );    
+      LOGGER.info( "WatcherKeyRequestConsumer.handleKeyExchangeRequest new key with secret key encapsulation set.");
 
       String responseType = null;;
       if( eventType.compareTo( WatcherIF.KyberKeyRequest ) == 0 )
@@ -217,8 +252,12 @@ public class WatcherKeyRequestConsumerVert extends AbstractVerticle
       KyberExchangeMessage responseMsg = new KyberExchangeMessage( kyberMsg.getSvcId(), 
                                                                    responseType, 
                                                                    kyberMsg.getPublicKey(), 
-                                                                   kyberKey.getEncapsulatedSecretKey().getEncapsulation() );
-      Future<io.vertx.core.eventbus.Message<byte[]>> response = eventBus.request( "kyber.keyResponse", 
+                                                                   encapsulation.getEncapsulation() );
+
+      LOGGER.info( "WatcherKeyRequestConsumer.handleKeyExchangeRequest sending the key request response to the eventbus 'watcher.keyExchange.response'");
+      LOGGER.info( "WatcherKeyRequestConsumer.handleKeyExchangeRequest encapsulation = " + encapsulation.getEncapsulation() );
+      // watcher.keyExchange.response is consumed in WatcherKeyResponseProducer
+      Future<io.vertx.core.eventbus.Message<byte[]>> response = eventBus.request( "watcher.keyExchange.response", 
                                                                                   KyberExchangeMessage.serialize( responseMsg ) );
       response.onComplete( this::handleResponse );
     }
@@ -249,7 +288,7 @@ public class WatcherKeyRequestConsumerVert extends AbstractVerticle
     DeploymentOptions pulsarOptions = new DeploymentOptions();
     pulsarOptions.setConfig( new JsonObject().put( "worker", true ) );
 
-    WatcherKeyRequestConsumerVert cVert = new WatcherKeyRequestConsumerVert( pulsarClient, metaDataSvc );
+    WatcherKeyRequestConsumerVert cVert = new WatcherKeyRequestConsumerVert( vertx, pulsarClient, metaDataSvc );
     Future<String> result = vertx.deployVerticle( cVert, pulsarOptions );
 
     if( result.succeeded() )

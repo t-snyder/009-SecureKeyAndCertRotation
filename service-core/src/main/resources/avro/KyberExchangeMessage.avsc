@@ -1,0 +1,13 @@
+{
+  "type": "record",
+  "name": "KyberExchangeMessage",
+  "namespace": "svc.model",
+  "fields": 
+  [
+    { "name": "svcId",         "type": "string" },
+    { "name": "eventType",     "type": "string" },
+    { "name": "publicKey",     "type": "bytes"  },
+    { "name": "encapsulation", "type": ["bytes", "null"] }
+  ],
+  "doc": "Transport object for kyber key exchange and key rotation"
+}

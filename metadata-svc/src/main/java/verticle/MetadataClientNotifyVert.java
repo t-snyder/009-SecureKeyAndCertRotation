@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory;
 //import io.fabric8.kubernetes.client.KubernetesClient;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
+import io.vertx.core.WorkerExecutor;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.eventbus.MessageConsumer;
 import svc.model.ServiceCoreIF;
@@ -38,6 +39,7 @@ public class MetadataClientNotifyVert extends AbstractVerticle
   private PulsarClient            pulsarClient     = null;
   private Producer<byte[]>        clientProducer   = null; // Send request for key exchange to metadata service
   private MessageConsumer<byte[]> eventBusConsumer = null;
+  private WorkerExecutor          workerExecutor   = null;
  
   
   public MetadataClientNotifyVert( PulsarClient pulsarClient )
@@ -49,30 +51,13 @@ public class MetadataClientNotifyVert extends AbstractVerticle
   public void start( Promise<Void> startPromise ) 
    throws Exception
   {
+    workerExecutor = vertx.createSharedWorkerExecutor("notify-producer");
+   
     try
     {
-      // Initialize key exchange response producer
-      clientProducer = pulsarClient.newProducer( Schema.BYTES )
-                                   .topic( ServiceCoreIF.MetaDataClientNotificationTopic )
-                                   .producerName(    ClientProducerName )
-                                   .enableBatching(  false )                  // Enable guaranteed delivery
-                                   .maxPendingMessages(0)                     // Enable guaranteed delivery
-                                   .create();
-      LOGGER.info( "Metadata client producer created" );
-    
-      // Register event bus consumer
-      eventBusConsumer = vertx.eventBus().consumer("metadata.client.send", message -> 
-      {
-        try
-        {
-          String result = processMsgSend( message );
-          message.reply(result);
-        } catch (Exception e) {
-          LOGGER.error("Error processing key response: " + e.getMessage(), e);
-          message.fail(500, "Error processing key response: " + e.getMessage());
-        }
-      });
-
+      initializeProducer();
+      registerEvent();
+      
       startPromise.complete();
       LOGGER.info("WatcherProducerVert started successfully");
     } 
@@ -86,7 +71,86 @@ public class MetadataClientNotifyVert extends AbstractVerticle
     }
   }
 
+  private String initializeProducer()
+  {
+    LOGGER.info( "MetadataClientNotifyVert.initializeProducer start" );
 
+    workerExecutor.executeBlocking(() -> 
+    {
+      try
+      {
+        // Initialize key exchange response producer
+        clientProducer = pulsarClient.newProducer( Schema.BYTES )
+                                     .topic( ServiceCoreIF.MetaDataClientNotificationTopic )
+                                     .producerName(    ClientProducerName )
+                                     .enableBatching(  false )                  // Enable guaranteed delivery
+                                     .maxPendingMessages(0)                     // Enable guaranteed delivery
+                                     .create();
+        LOGGER.info( "Metadata client producer created" );
+        return ServiceCoreIF.SUCCESS;
+      } 
+      catch( Exception e ) 
+      {
+        String msg = "Failed to initialize WatcherProducerVert: " + e.getMessage();
+        LOGGER.error(msg, e);
+        cleanup();
+        throw e;
+      }
+    }).onComplete(ar -> 
+    {
+      if( ar.failed() ) 
+      {
+        LOGGER.error("Worker execution failed: {}", ar.cause().getMessage());
+        throw new RuntimeException( ar.cause() );
+      }
+    });
+    
+    return ServiceCoreIF.SUCCESS;
+  };
+
+  
+  private String registerEvent()
+  {
+    LOGGER.info( "MetadataClientNotifyVert.registerEvent start" );
+
+    workerExecutor.executeBlocking(() -> 
+    {
+      try
+      {
+        // Register event bus consumer
+        eventBusConsumer = vertx.eventBus().consumer("metadata.client.send", message -> 
+        {
+          try
+          {
+            String result = processMsgSend( message );
+            message.reply(result);
+          } catch (Exception e) {
+            LOGGER.error("Error processing key response: " + e.getMessage(), e);
+            message.fail(500, "Error processing key response: " + e.getMessage());
+          }
+        });
+        
+        return ServiceCoreIF.SUCCESS;
+      }
+      catch( Exception e ) 
+      {
+        String msg = "Failed to initialize WatcherProducerVert: " + e.getMessage();
+        LOGGER.error(msg, e);
+        cleanup();
+        throw e;
+      }
+    }).onComplete(ar -> 
+    {
+      if( ar.failed() ) 
+      {
+        LOGGER.error("Worker execution failed: {}", ar.cause().getMessage());
+        throw new RuntimeException( ar.cause() );
+      }
+    });
+    
+    return ServiceCoreIF.SUCCESS;
+  };
+  
   private String processMsgSend( Message<byte[]> msg )
   {
     LOGGER.info("MetadataClientNotifyVert.processSendMsg() - Processing Client Notification message");

@@ -50,13 +50,13 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/streamnative/pulsar
 #         
 # Open terminal 1
 # Delete prior minikube ( if used and configured prior)
-minikube delete
+minikube delete -p servers
 
 # Start minikube - configure the settings to your requirements and hardware
 # Note - normally I use kvm2 as the vm-driver. However istio cni in ambient mode does not
 # currently work with kvm2 due to cni incompatibility. The work around is to use the 
 # docker vm-driver.
-minikube start -p servers --cpus 4 --memory 12288 --vm-driver docker --cni kindnet --disk-size 100g
+minikube start -p servers --cpus 3 --memory 12288 --vm-driver docker --cni kindnet --disk-size 100g
 
 # Not really necessary as the minikube start configures kubectl to the servers instance.
 minikube profile servers
@@ -99,8 +99,8 @@ helm install cert-manager --version 1.15 jetstack/cert-manager --namespace cert-
   --set config.enableGatewayAPI=true \
   --set "extraArgs={--feature-gates=ExperimentalGatewayAPISupport=true}"
 
-# Project Directory
-PROTODIR=/media/tim/ExtraDrive1/Projects/services/pulsarWatcher/deploy
+# Project Directory - Change to your source directory
+PROTODIR=/media/tim/ExtraDrive1/Projects/009-SecureKeyAndCertRotation/deploy
 
 # Create pulsar namespace
 kubectl create namespace pulsar
@@ -138,7 +138,7 @@ bin/pulsar initialize-cluster-metadata \
               --web-service-url http://pulsar-broker.pulsar.svc.cluster.local:8080/ \
               --web-service-url-tls https://pulsar-broker.pulsar.svc.cluster.local:8443/ \
               --broker-service-url pulsar://pulsar-broker.pulsar.svc.cluster.local:6650/ \
-              --broker-service-url-tls pulsar+ssl://pulsar-broker.pulsar.svc.cluster.local:6651/ ;
+              --broker-service-url-tls pulsar+ssl://pulsar-broker.pulsar.svc.cluster.local:6651/;
 
 exit
 
@@ -148,10 +148,10 @@ exit
 kubectl apply -f ${PROTODIR}/kube-pulsar/bookie-statefulset.yaml
 kubectl -n pulsar wait --timeout=1m --for=condition=Ready pod/pulsar-bookie-2
 
-# Has Zookeeper and Bookie ready before dependency
+# Requires Zookeeper and Bookie ready as a dependency
 kubectl apply -f ${PROTODIR}/kube-pulsar/broker-service.yaml
 kubectl apply -f ${PROTODIR}/kube-pulsar/broker-statefulset.yaml
-kubectl -n pulsar wait --timeout=1m --for=condition=Ready pod/pulsar-broker-2
+kubectl -n pulsar wait --timeout=2m --for=condition=Ready pod/pulsar-broker-2
 
 # Has Zookeeper and Broker ready dependency
 kubectl apply -f ${PROTODIR}/kube-pulsar/proxy-service.yaml
@@ -184,6 +184,7 @@ bin/pulsar-admin topics create-partitioned-topic metadata/kyber/exchange-request
 bin/pulsar-admin topics create-partitioned-topic metadata/watcher/tls-update        -p 3
 bin/pulsar-admin topics create-partitioned-topic metadata/watcher/exchange-request  -p 3
 bin/pulsar-admin topics create-partitioned-topic metadata/watcher/exchange-response -p 3
+bin/pulsar-admin topics create-partitioned-topic metadata/watcher/cert-update       -p 3
 
 bin/pulsar-admin topics list-partitioned-topics metadata/client
 bin/pulsar-admin topics list-partitioned-topics metadata/pulsar
@@ -195,15 +196,10 @@ exit
 # Set pulsar namespace to istio ambient mode (ie. no sidecar) also initiates mTls
 kubectl label namespace pulsar istio.io/dataplane-mode=ambient
 
-# Deploy Watcher
+# Start a new Terminal for the port-forward using the servers profile
+# Ensure Servers cluster 
+minikube profile servers
 
-# We need to build the papaya docker file.
-/bin/bash $PROTODIR/scripts/buildDockerImage.sh
+#kubectl port-forward -n pulsar service/pulsar-proxy 6651:6651 --address=0.0.0.0
 
-kubectl -n pulsar apply -f $PROTODIR/kube-watch/watcher-sa.yaml
-#kubectl -n pulsar apply -f $PROTODIR/kube-watch/watcher-networkpolicy.yaml
-kubectl -n pulsar apply -f $PROTODIR/kube-watch/watcher-configmap.yaml
-kubectl -n pulsar apply -f $PROTODIR/kube-watch/watcher-rbac.yaml
-kubectl -n pulsar apply -f $PROTODIR/kube-watch/watcher.yaml
-kubectl -n pulsar apply -f $PROTODIR/kube-watch/watcher-service.yaml
 

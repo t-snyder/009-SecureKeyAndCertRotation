@@ -1,6 +1,8 @@
 package verticle;
 
 
+import java.util.Arrays;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.pulsar.client.api.Consumer;
@@ -18,12 +20,15 @@ import io.vertx.core.AsyncResult;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
+import io.vertx.core.Vertx;
 import io.vertx.core.WorkerExecutor;
 //import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.json.JsonObject;
 import service.MetadataService;
+import svc.crypto.AesGcmHkdfCrypto;
+import svc.crypto.EncryptedData;
+import svc.handler.SharedSecretManager;
 import svc.model.CertificateMessage;
-import svc.model.CertificateMessage.CertEventType;
 import svc.model.CertificateMessageFactory;
 import svc.model.ServiceCoreIF;
 import svc.pulsar.PulsarConsumerErrorHandler;
@@ -33,18 +38,20 @@ public class WatcherCertConsumerVert extends AbstractVerticle
   private static final Logger LOGGER                    = LoggerFactory.getLogger( WatcherCertConsumerVert.class );
   private static final String WATCHER_CERT_SUBSCRIPTION = "watcher-cert-subscription";
  
-  private MetadataService  metaDataSvc    = null;
-  private PulsarClient     pulsarClient   = null;
-  private WorkerExecutor   workerExecutor = null;
-  private Consumer<byte[]> certConsumer   = null;
-
-  private PulsarConsumerErrorHandler errHandler = new PulsarConsumerErrorHandler();
-//  private CertificateMessageFactory  msgFactory = null;
+  private MetadataService  metaDataSvc      = null;
+  private PulsarClient     pulsarClient     = null;
+  private WorkerExecutor   workerExecutor   = null;
+  private Consumer<byte[]> certConsumer     = null;
+  private AesGcmHkdfCrypto aesGcmHkdfCrypto = new AesGcmHkdfCrypto();
   
-  public WatcherCertConsumerVert( PulsarClient pulsarClient, MetadataService svc )
+  private PulsarConsumerErrorHandler errHandler    = new PulsarConsumerErrorHandler();
+  private SharedSecretManager        encKeyManager = null;
+  
+  public WatcherCertConsumerVert( Vertx vertx, PulsarClient pulsarClient, MetadataService svc )
   {
-    this.pulsarClient = pulsarClient;
-    this.metaDataSvc  = svc;
+    this.pulsarClient  = pulsarClient;
+    this.metaDataSvc   = svc;
+    this.encKeyManager = new SharedSecretManager( vertx );
 //    this.msgFactory   = new CertificateMessageFactory( metaDataSvc.getWatcherKey().getEncodedSecretKey() );
   }
 
@@ -108,17 +115,21 @@ public class WatcherCertConsumerVert extends AbstractVerticle
     }
   }
 
-  private void startCertConsumer() throws PulsarClientException
+  /**
+   * Message listener for key exchange responses
+   */
+  private MessageListener<byte[]> createCertMessageListener() 
   {
-    MessageListener<byte[]> certMsgListener = ( certConsumer, msg ) -> 
+    return (consumer, msg) -> 
     {
-      Future<String> result = workerExecutor.executeBlocking( () -> 
+      workerExecutor.executeBlocking(() -> 
       {
         try 
         {
-          handleCertMessage( msg );
+          CertificateMessage certMsg = handleCertMessage( msg );
           certConsumer.acknowledge( msg );
-          LOGGER.info( "Cert Consumer - Message Received and Ack'd - " + new String( msg.getData() ) );
+          LOGGER.info( "WatcherCertConsumerVert.createMessageListener - Message Received and Ack'd. Msg serviceId = " + 
+                        certMsg.getServiceId() + "; Msg eventType = " + certMsg.getEventType() + "; caCert = " + certMsg.getCaCert() );
           return ServiceCoreIF.SUCCESS;
         } 
         catch( Throwable t )
@@ -133,58 +144,102 @@ public class WatcherCertConsumerVert extends AbstractVerticle
           }
           throw t;
         }
-      } );
-      
-      if( result.failed() )
-      {
-        LOGGER.error( "Worker execution failed: " + result.cause().getMessage() );
-        errHandler.handleMessageProcessingFailure( pulsarClient, certConsumer, msg, result.cause());
-      }
+      }).onComplete(ar -> 
+         {
+           if( ar.failed() ) 
+           {
+             LOGGER.error("Worker execution failed: {}", ar.cause().getMessage());
+             errHandler.handleMessageProcessingFailure(pulsarClient, consumer, msg, ar.cause());
+           }
+         });
     };
+  };
+
+
+  private String startCertConsumer() throws PulsarClientException
+  {
+    LOGGER.info("WatcherCertConsumerVert.startCertConsumer() - Starting key exchange response consumer");
+
+    MessageListener<byte[]> certMsgListener = createCertMessageListener();
+
+    workerExecutor.executeBlocking(() -> 
+    {
+      try
+      {
+        certConsumer = pulsarClient.newConsumer().topic( ServiceCoreIF.MetaDataWatcherCertTopic )
+                                  .subscriptionName( WATCHER_CERT_SUBSCRIPTION )
+                                  .subscriptionType( SubscriptionType.Shared )
+                                  .messageListener( certMsgListener )
+                                  .ackTimeout( 10, TimeUnit.SECONDS ) // Automatic
+                                  .subscribe();
+        return ServiceCoreIF.SUCCESS;
+      } 
+      catch( PulsarClientException e )
+      {
+        LOGGER.error( "Consumer creation exception. Error = - " + e.getMessage() );
+        cleanup();
+        throw e;
+      }
+    }).onComplete(ar -> 
+    {
+      if( ar.failed() ) 
+      {
+        LOGGER.error("Worker execution failed: {}", ar.cause().getMessage());
+        throw new RuntimeException( ar.cause() );
+      }
+    });
+    
+	return ServiceCoreIF.SUCCESS;
+  };
+
+  private CertificateMessage handleCertMessage( Message<?> msg )
+   throws Exception
+  {
+    EncryptedData      encData   = null;
+    byte[]             msgBytes  = null;
+    CertificateMessage certMsg   = null;
+    byte[]             sharedKey = null;
 
     try
     {
-      certConsumer = pulsarClient.newConsumer().topic( ServiceCoreIF.MetaDataWatcherCertTopic )
-                                .subscriptionName( WATCHER_CERT_SUBSCRIPTION )
-                                .subscriptionType( SubscriptionType.Shared )
-                                .messageListener( certMsgListener )
-                                .ackTimeout( 10, TimeUnit.SECONDS ) // Automatic
-                                .subscribe();
+      sharedKey = encKeyManager.getSecretBytes( "watcher" );
+      encData   = EncryptedData.deserialize( msg.getData() );
+      msgBytes  = aesGcmHkdfCrypto.decrypt( encData, sharedKey );
+      certMsg   = CertificateMessage.deSerialize( msgBytes );
     } 
-    catch( PulsarClientException e )
+    catch( Exception e )
     {
-      LOGGER.error( "Consumer creation exception. Error = - " + e.getMessage() );
-      cleanup();
-      throw e;
+      String errMsg = "WatcherCertConsumerVert.handleCertMessage - Error = " + e.getMessage();
+      LOGGER.error( errMsg );
+      throw new Exception( errMsg );
     }
-  }
-
-  private void handleCertMessage( Message<?> msg )
-  {
-    CertificateMessageFactory msgFactory =  new CertificateMessageFactory( metaDataSvc.getWatcherKey().getEncodedSecretKey() );
-    CertificateMessage certMsg = msgFactory.readMessage( msg.getData() );
-
+ 
     switch( certMsg.getEventType() )
     {
-      case CertEventType.ADDED:
-      
+      case "ADDED":
+        LOGGER.info( "WatcherCertConsumerVert.handleCertMessage - handling ecentType = ADDED" );
+             
         break;
 
-      case CertEventType.MODIFIED:
+      case "MODIFIED":
+        LOGGER.info( "WatcherCertConsumerVert.handleCertMessage - handling ecentType = MODIFIED" );
         
         break;
 
-      case CertEventType.DELETED:
+      case "DELETED":
+        LOGGER.info( "WatcherCertConsumerVert.handleCertMessage - handling ecentType = DELETED" );
         String errMsg = "TLS Certificate Deleted. Closing";
         LOGGER.error( errMsg );
         cleanup();
         throw new RuntimeException( errMsg );
 
-      case CertEventType.INITIAL:  
-        String errMsgInitial = "Initial TLS Certificate Not supported.";
+      case "INITIAL":  
+        String errMsgInitial = "WatcherCertConsumerVert.handleCertMessage - Initial TLS Certificate Not supported.";
         LOGGER.error( errMsgInitial );
         break;
     }
+    
+    return certMsg;
   }
 
   private String handleResponse( AsyncResult<io.vertx.core.eventbus.Message<byte[]>> ar )
@@ -212,7 +267,7 @@ public class WatcherCertConsumerVert extends AbstractVerticle
     DeploymentOptions pulsarOptions = new DeploymentOptions();
     pulsarOptions.setConfig( new JsonObject().put( "worker", true ) );
 
-    WatcherCertConsumerVert cVert = new WatcherCertConsumerVert( pulsarClient, metaDataSvc );
+    WatcherCertConsumerVert cVert = new WatcherCertConsumerVert( vertx, pulsarClient, metaDataSvc );
     Future<String> result = vertx.deployVerticle( cVert, pulsarOptions );
 
     if( result.succeeded() )

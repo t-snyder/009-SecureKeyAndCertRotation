@@ -12,32 +12,40 @@ import org.apache.pulsar.client.api.Producer;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.api.Schema;
-
+import org.bouncycastle.util.encoders.Hex;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 //import io.fabric8.kubernetes.client.KubernetesClient;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
+import io.vertx.core.Vertx;
+import io.vertx.core.WorkerExecutor;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.eventbus.MessageConsumer;
 import svc.model.ServiceCoreIF;
+import svc.utils.DebugCrypto;
+import svc.crypto.KyberKEMCrypto;
+import svc.model.KyberExchangeMessage;
 import svc.model.PulsarMsgHeader;
 
 
 public class WatcherKeyResponseProducerVert extends AbstractVerticle
 {
   private static final Logger LOGGER          = LoggerFactory.getLogger( WatcherKeyResponseProducerVert.class );
-  private static final String KeyProducerName = "key-response";
+  private static final String KeyProducerName = "key-response-producer";
   private static final String Version         = "1.0";
 
+  private Vertx                   vertx               = null;
   private PulsarClient            pulsarClient        = null;
   private Producer<byte[]>        keyResponseProducer = null; // Send request for key exchange to metadata service
   private MessageConsumer<byte[]> keyResponseConsumer = null;
+  private WorkerExecutor          workerExecutor      = null;
  
   
-  public WatcherKeyResponseProducerVert( PulsarClient pulsarClient )
+  public WatcherKeyResponseProducerVert( Vertx vertx, PulsarClient pulsarClient )
   {
+    this.vertx         = vertx;
     this.pulsarClient  = pulsarClient;
   }
   
@@ -45,30 +53,12 @@ public class WatcherKeyResponseProducerVert extends AbstractVerticle
   public void start( Promise<Void> startPromise ) 
    throws Exception
   {
+    workerExecutor = vertx.createSharedWorkerExecutor( "key-producer" );
+   
     try
     {
-      // Initialize key exchange response producer
-      keyResponseProducer = pulsarClient.newProducer( Schema.BYTES )
-                                .topic( ServiceCoreIF.WatcherKeyResponseTopic )
-                                .producerName(    KeyProducerName )
-                                .enableBatching(  false )                  // Enable guaranteed delivery
-                                .maxPendingMessages(0)                     // Enable guaranteed delivery
-                                .create();
-      LOGGER.info( "Pulsar key exchange resposne producer created" );
-    
-      // Register event bus consumer
-      keyResponseConsumer = vertx.eventBus().consumer("kyber.keyResponse", message -> 
-      {
-        try
-        {
-          String result = processKeyResponse( message );
-          message.reply(result);
-        } catch (Exception e) {
-          LOGGER.error("Error processing key response: " + e.getMessage(), e);
-          message.fail(500, "Error processing key response: " + e.getMessage());
-        }
-      });
-
+      initializeProducer();
+      registerEventConsumer();
       startPromise.complete();
       LOGGER.info("WatcherProducerVert started successfully");
     } 
@@ -82,7 +72,88 @@ public class WatcherKeyResponseProducerVert extends AbstractVerticle
     }
   }
 
+  private String initializeProducer()
+  {
+    LOGGER.info("WatcherKeyResponseProducerVert.initializeProducer() - Starting producer");
 
+    workerExecutor.executeBlocking(() -> 
+	{
+	  try
+	  {
+        // Initialize key exchange response producer
+	    keyResponseProducer = pulsarClient.newProducer( Schema.BYTES )
+	                                      .topic( ServiceCoreIF.WatcherKeyResponseTopic )
+	                                      .producerName(    KeyProducerName )
+	                                      .enableBatching(  false )                  // Enable guaranteed delivery
+	                                      .maxPendingMessages(0)                     // Enable guaranteed delivery
+	                                      .create();
+        LOGGER.info("WatcherKeyResponseProducerVert started successfully");
+        return ServiceCoreIF.SUCCESS;
+      } 
+      catch( Exception e ) 
+      {
+        String msg = "Failed to initialize WatcherKeyResponseProducerVert: " + e.getMessage();
+        LOGGER.error(msg, e);
+        cleanup();
+        throw e;
+      }
+    }).onComplete(ar -> 
+    {
+      if( ar.failed() ) 
+      {
+        LOGGER.error("WatcherKeyResponseProducerVert Worker execution failed: {}", ar.cause().getMessage());
+        throw new RuntimeException( ar.cause()) ;
+      }
+    });
+    
+	return ServiceCoreIF.SUCCESS;
+  };
+
+  private String registerEventConsumer()
+  {
+    LOGGER.info("WatcherKeyResponseProducerVert.registerEventConsumer() - Starting");
+
+    workerExecutor.executeBlocking(() -> 
+    {
+      try
+	    {
+	      // Register event bus consumer
+	      keyResponseConsumer = vertx.eventBus().consumer("watcher.keyExchange.response", message -> 
+	      {
+	        try
+	        {
+	          String result = processKeyResponse( message );
+	          message.reply(result);
+	        } 
+	        catch( Exception e ) 
+	        {
+	          LOGGER.error("Error processing key response: " + e.getMessage(), e);
+	          message.fail(500, "Error processing key response: " + e.getMessage());
+	        }
+	      });
+
+        LOGGER.info("WatcherKeyResponseProducerVert started successfully");
+        return ServiceCoreIF.SUCCESS;
+      } 
+      catch( Exception e ) 
+      {
+        String msg = "Failed to initialize WatcherKeyResponseProducerVert: " + e.getMessage();
+        LOGGER.error(msg, e);
+        cleanup();
+        throw e;
+      }
+    }).onComplete(ar -> 
+    {
+      if( ar.failed() ) 
+      {
+        LOGGER.error("WatcherKeyResponseProducerVert Worker execution failed: {}", ar.cause().getMessage());
+        throw new RuntimeException( ar.cause()) ;
+      }
+    });
+    
+	return ServiceCoreIF.SUCCESS;
+ }
+  
   private String processKeyResponse( Message<byte[]> msg )
   {
     LOGGER.info("WatcherProducerVert.processKeyResponse() - Processing key response message");
@@ -92,13 +163,33 @@ public class WatcherKeyResponseProducerVert extends AbstractVerticle
       return ServiceCoreIF.FAILURE;
     }
     
-    byte[] encapsulation = (byte[]) msg.body();
- 
-    PulsarMsgHeader header = new PulsarMsgHeader( null, ServiceCoreIF.KyberResponse, UUID.randomUUID().toString(), Instant.now().toString(), Version );
+    byte[] responseMsg = (byte[]) msg.body();
+
+    try
+    {
+      KyberExchangeMessage msgObj = KyberExchangeMessage.deSerialize( responseMsg );
+      LOGGER.info( "=================================================");
+      LOGGER.info( "Message contents for test deSerialize of KyberExchangeMessage" );
+      LOGGER.info( "svcId         = " + msgObj.getSvcId() );
+      LOGGER.info( "eventType     = " + msgObj.getEventType() );
+      LOGGER.info( "publicKey     = " + msgObj.getPublicKey() );
+      LOGGER.info( "encapsulation = " + msgObj.getEncapsulation() );
+      LOGGER.info( "Encapsulation length: " + msgObj.getEncapsulation().length + " bytes" );
+      LOGGER.info( "Encapsulation (hex):  " + Hex.toHexString( msgObj.getEncapsulation() ) );
+      LOGGER.info( "=================================================");
+    } 
+    catch( Exception e )
+    {
+      // TODO Auto-generated catch block
+      e.printStackTrace();
+    }
+    
+    
+    PulsarMsgHeader header = new PulsarMsgHeader( "watcher", ServiceCoreIF.KyberResponse, UUID.randomUUID().toString(), Instant.now().toString(), Version );
     
     try
     {
-      sendMessage( keyResponseProducer, ServiceCoreIF.KyberMsgKey, encapsulation, header.toMap() );
+      sendMessage( keyResponseProducer, ServiceCoreIF.KyberMsgKey, responseMsg, header.toMap() );
       LOGGER.info("Successfully sent key response message to Watcher service");
       return ServiceCoreIF.SUCCESS;
     } 

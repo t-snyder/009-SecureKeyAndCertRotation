@@ -17,11 +17,6 @@ public interface WatcherIF
 //  public static final String PulsarMetaDataTopic = "metaDataTopic";
 //  public static final String PulsarExchangeTopic = "exchangeTopic";
 
-  // Watcher topics 
-  public static final String MetaDataCertUpdateTopic  = "persistent://metadata/watcher/cert/update";       // topic for sending tls cert updates to the metadata service
-  public static final String KeyExchangeRequestTopic  = "persistent://metadata/watcher/exchange/request";  // topic for watcher to send key exchange request
-  public static final String KeyExchangeResponseTopic = "persistent://metadata/watcher/exchange/response"; // topic for watcher to receive key exchange result
-
   // Watcher Key Exchange
   public static final String KyberMsgKey      = "kyberExchange";      // Key exchange request msg key
   public static final String KyberKeyRequest  = "KyberKeyRequest";    // Key exchange request event msg Type

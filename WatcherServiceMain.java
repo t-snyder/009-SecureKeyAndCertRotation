@@ -4,7 +4,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CompletableFuture;
 
 import java.security.PublicKey;
 
@@ -14,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import eventbus.EventBusHandler;
 
 import io.fabric8.kubernetes.api.model.ConfigMap;
+import io.fabric8.kubernetes.api.model.Secret;
 import io.fabric8.kubernetes.client.Config;
 import io.fabric8.kubernetes.client.ConfigBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
@@ -29,6 +32,14 @@ import io.vertx.core.eventbus.Message;
 import io.vertx.core.eventbus.MessageConsumer;
 import io.vertx.core.json.JsonObject;
 
+// Pulsar Admin API imports
+import org.apache.pulsar.client.admin.PulsarAdmin;
+import org.apache.pulsar.client.admin.PulsarAdminBuilder;
+import org.apache.pulsar.client.api.AuthenticationFactory;
+import org.apache.pulsar.common.policies.data.AuthAction;
+import org.apache.pulsar.common.policies.data.TenantInfo;
+import org.apache.pulsar.common.policies.data.TopicStats;
+
 import pulsar.WatcherPulsarClient;
 import svc.crypto.KyberKEMCrypto;
 import svc.model.ChildVerticle;
@@ -43,12 +54,13 @@ import verticle.SecretsWatcherVert;
 /**
  * Creates a secrets Watcher using the Kubernetes Client API to watch for specific events which are generally tls certificate renewal events and new certificates.
  * By capturing the change events on the TLS client certificates being managed by Cert-Manager the watcher publishes updated
- * renewal certificates to the MetaData Service which publishes the renewals to client services. 
+ * renewal certificates to the MetaData Service which publishes the renewals to client services.
+ * 
+ * Enhanced with Pulsar Admin API integration for client validation and authorization management.
  * 
  * The Deployment of this service within a Kubernetes cluster (within the pulsar namespace) requires the following env variables to be set within the Deployment:
  *    kubeClusterName  = cluster name the ClusterWatcherVert is being deployed into. Used for publishing changes.
  *    watcherNameSpace = Namespace the watcher deployment is to. Used for validation and publishing changes.
- *    
  */
 public class WatcherServiceMain
 {
@@ -56,12 +68,6 @@ public class WatcherServiceMain
   private static final String  TlsDefaultPath = "/app/certs/tls/tls.crt";  // Persistent volume mount path for TLS certs
   private static final String  ServiceId      = "watcher";
   
-//  private static final String CONFIG_FILE = "config/watcher-config.json";
-//  private static final int    DEFAULT_ROTATION_INTERVAL_HOURS = 24;
-//  private static final int    DEFAULT_KEY_EXPIRY_HOURS = 72;
-
-//  private static final AtomicReference<WatcherServiceMain> INSTANCE = new AtomicReference<>();
-
   private WatcherConfig watchConfig = null;
   private String        nameSpace   = null;
   private String        podName     = null;
@@ -75,9 +81,13 @@ public class WatcherServiceMain
   private List<ChildVerticle> deployedVerticles = new ArrayList<ChildVerticle>();
   private WorkerExecutor      workerExecutor    = null;
 
+  // Pulsar Admin API components
+  private PulsarAdmin         pulsarAdmin       = null;
+  private PulsarAuthManager   authManager       = null;
+
   private PulsarConsumerVert  consumerVert = null;
   private PulsarProducerVert  producerVert = null;
-  private SecretsWatcherVert  secretsVert  = null;;
+  private SecretsWatcherVert  secretsVert  = null;
 
   
   public WatcherServiceMain() 
@@ -107,6 +117,9 @@ public class WatcherServiceMain
       {
         throw new IllegalStateException( "Failed to create Pulsar client" );
       }
+
+      // Initialize Pulsar Admin API
+      initializePulsarAdmin();
       
       keyExchangeSvc = KeyExchangeService.getInstance();
       keyExchangeSvc.initialize( vertx, pulsarClient, 0 );
@@ -116,6 +129,301 @@ public class WatcherServiceMain
       String errMsg = "Error initializing WatcherServiceMain: " + e.getMessage();
       LOGGER.error( errMsg, e );
       throw new RuntimeException( errMsg );
+    }
+  }
+
+  /**
+   * Initialize Pulsar Admin API client using configuration from Kubernetes
+   */
+  private void initializePulsarAdmin() throws Exception 
+  {
+    LOGGER.info("Initializing Pulsar Admin API client");
+    
+    try 
+    {
+      // Read Pulsar admin configuration from Kubernetes Secret
+      PulsarAdminConfig adminConfig = readPulsarAdminConfig();
+      
+      PulsarAdminBuilder adminBuilder = PulsarAdmin.builder()
+          .serviceHttpUrl(adminConfig.getServiceHttpUrl());
+
+      // Configure authentication if provided
+      if (adminConfig.hasAuthentication()) 
+      {
+        if (adminConfig.isTokenAuth()) 
+        {
+          adminBuilder.authentication(
+              AuthenticationFactory.token(adminConfig.getAuthToken())
+          );
+        } 
+        else if (adminConfig.isTlsAuth()) 
+        {
+          adminBuilder.authentication(
+              AuthenticationFactory.createTLS(
+                  adminConfig.getTlsCertPath(), 
+                  adminConfig.getTlsKeyPath()
+              )
+          );
+        }
+      }
+
+      // Configure TLS if needed
+      if (adminConfig.isTlsEnabled()) 
+      {
+        adminBuilder.tlsTrustCertsFilePath(adminConfig.getTlsTrustCertsPath())
+                   .allowTlsInsecureConnection(adminConfig.isAllowTlsInsecureConnection())
+                   .enableTlsHostnameVerification(adminConfig.isTlsHostnameVerificationEnabled());
+      }
+
+      pulsarAdmin = adminBuilder.build();
+      
+      // Initialize auth manager with Pulsar Admin and Kubernetes client
+      authManager = new PulsarAuthManager(pulsarAdmin, kubeClient, nameSpace);
+      
+      LOGGER.info("Pulsar Admin API client initialized successfully");
+      
+      // Verify connection and setup initial authorization
+      setupInitialAuthorization();
+    } 
+    catch (Exception e) 
+    {
+      LOGGER.error("Failed to initialize Pulsar Admin API: {}", e.getMessage(), e);
+      throw e;
+    }
+  }
+
+  /**
+   * Read Pulsar Admin configuration from Kubernetes ConfigMap and Secret
+   */
+  private PulsarAdminConfig readPulsarAdminConfig() throws Exception 
+  {
+    LOGGER.info("Reading Pulsar Admin configuration from Kubernetes");
+    
+    // Read configuration from ConfigMap
+    ConfigMap adminConfigMap = kubeClient.configMaps()
+        .inNamespace(nameSpace)
+        .withName("pulsar-admin-config")
+        .get();
+        
+    if (adminConfigMap == null) 
+    {
+      throw new IllegalStateException("Pulsar admin ConfigMap 'pulsar-admin-config' not found");
+    }
+
+    Map<String, String> configData = adminConfigMap.getData();
+    PulsarAdminConfig adminConfig = new PulsarAdminConfig(configData);
+
+    // Read sensitive data from Secret if authentication is enabled
+    if (adminConfig.hasAuthentication()) 
+    {
+      Secret adminSecret = kubeClient.secrets()
+          .inNamespace(nameSpace)
+          .withName("pulsar-admin-secret")
+          .get();
+          
+      if (adminSecret != null) 
+      {
+        Map<String, String> secretData = adminSecret.getStringData();
+        if (secretData != null) 
+        {
+          adminConfig.setSecretData(secretData);
+        }
+      }
+    }
+
+    return adminConfig;
+  }
+
+  /**
+   * Setup initial authorization for the watcher service
+   */
+  private void setupInitialAuthorization() throws Exception 
+  {
+    LOGGER.info("Setting up initial Pulsar authorization for watcher service");
+    
+    try 
+    {
+      // Verify connection
+      List<String> clusters = pulsarAdmin.clusters().getClusters();
+      LOGGER.info("Connected to Pulsar clusters: {}", clusters);
+
+      // Setup tenant and namespace permissions for watcher
+      authManager.ensureWatcherPermissions(ServiceId);
+      
+      // Register event bus handlers for auth management
+      registerAuthEventHandlers();
+      
+      LOGGER.info("Initial Pulsar authorization setup completed");
+    } 
+    catch (Exception e) 
+    {
+      LOGGER.error("Failed to setup initial authorization: {}", e.getMessage(), e);
+      throw e;
+    }
+  }
+
+  /**
+   * Register event bus handlers for Pulsar authentication/authorization management
+   */
+  private void registerAuthEventHandlers() 
+  {
+    // Handler for client authorization requests
+    vertx.eventBus().consumer("pulsar.auth.authorize", (Message<JsonObject> message) -> {
+      JsonObject authRequest = message.body();
+      
+      workerExecutor.executeBlocking(() -> {
+        try 
+        {
+          String clientId = authRequest.getString("clientId");
+          String topic = authRequest.getString("topic");
+          String action = authRequest.getString("action"); // "produce" or "consume"
+          
+          boolean authorized = authManager.authorizeClient(clientId, topic, action);
+          
+          JsonObject response = new JsonObject()
+              .put("authorized", authorized)
+              .put("clientId", clientId)
+              .put("topic", topic)
+              .put("action", action);
+              
+          message.reply(response);
+          
+          return ServiceCoreIF.SUCCESS;
+        } 
+        catch (Exception e) 
+        {
+          LOGGER.error("Error processing authorization request", e);
+          message.fail(500, e.getMessage());
+          return ServiceCoreIF.FAILURE;
+        }
+      });
+    });
+
+    // Handler for retrieving client stats
+    vertx.eventBus().consumer("pulsar.stats.client", (Message<JsonObject> message) -> {
+      JsonObject statsRequest = message.body();
+      
+      workerExecutor.executeBlocking(() -> {
+        try 
+        {
+          String topic = statsRequest.getString("topic");
+          JsonObject stats = authManager.getTopicStats(topic);
+          message.reply(stats);
+          return ServiceCoreIF.SUCCESS;
+        } 
+        catch (Exception e) 
+        {
+          LOGGER.error("Error retrieving topic stats", e);
+          message.fail(500, e.getMessage());
+          return ServiceCoreIF.FAILURE;
+        }
+      });
+    });
+
+    // Handler for managing client permissions
+    vertx.eventBus().consumer("pulsar.auth.manage", (Message<JsonObject> message) -> {
+      JsonObject mgmtRequest = message.body();
+      
+      workerExecutor.executeBlocking(() -> {
+        try 
+        {
+          String operation = mgmtRequest.getString("operation"); // "grant", "revoke", "list"
+          String clientId = mgmtRequest.getString("clientId");
+          String namespace = mgmtRequest.getString("namespace");
+          
+          JsonObject result = authManager.manageClientPermissions(operation, clientId, namespace, mgmtRequest);
+          message.reply(result);
+          
+          return ServiceCoreIF.SUCCESS;
+        } 
+        catch (Exception e) 
+        {
+          LOGGER.error("Error managing client permissions", e);
+          message.fail(500, e.getMessage());
+          return ServiceCoreIF.FAILURE;
+        }
+      });
+    });
+
+    LOGGER.info("Pulsar authentication event bus handlers registered");
+  }
+
+  /**
+   * Validate client access using both Kubernetes and Pulsar Admin APIs
+   */
+  public CompletableFuture<Boolean> validateClientAccess(String clientId, String topic, String action) 
+  {
+    return CompletableFuture.supplyAsync(() -> {
+      try 
+      {
+        // First check if client exists in Kubernetes (ServiceAccount, Pod, etc.)
+        boolean kubernetesValid = validateKubernetesClient(clientId);
+        if (!kubernetesValid) 
+        {
+          LOGGER.warn("Client {} not found in Kubernetes namespace {}", clientId, nameSpace);
+          return false;
+        }
+
+        // Then check Pulsar permissions
+        boolean pulsarAuthorized = authManager.authorizeClient(clientId, topic, action);
+        if (!pulsarAuthorized) 
+        {
+          LOGGER.warn("Client {} not authorized for {} on topic {}", clientId, action, topic);
+          return false;
+        }
+
+        LOGGER.info("Client {} validated successfully for {} on topic {}", clientId, action, topic);
+        return true;
+      } 
+      catch (Exception e) 
+      {
+        LOGGER.error("Error validating client access for {}: {}", clientId, e.getMessage(), e);
+        return false;
+      }
+    });
+  }
+
+  /**
+   * Validate client exists in Kubernetes cluster
+   */
+  private boolean validateKubernetesClient(String clientId) 
+  {
+    try 
+    {
+      // Check if ServiceAccount exists
+      if (kubeClient.serviceAccounts().inNamespace(nameSpace).withName(clientId).get() != null) 
+      {
+        return true;
+      }
+
+      // Check if Pod with matching label exists
+      if (!kubeClient.pods().inNamespace(nameSpace)
+          .withLabel("app", clientId).list().getItems().isEmpty()) 
+      {
+        return true;
+      }
+
+      // Check if client is in approved clients ConfigMap
+      ConfigMap approvedClients = kubeClient.configMaps()
+          .inNamespace(nameSpace)
+          .withName("approved-pulsar-clients")
+          .get();
+          
+      if (approvedClients != null) 
+      {
+        String clients = approvedClients.getData().get("clients");
+        if (clients != null && clients.contains(clientId)) 
+        {
+          return true;
+        }
+      }
+
+      return false;
+    } 
+    catch (Exception e) 
+    {
+      LOGGER.error("Error validating Kubernetes client {}: {}", clientId, e.getMessage(), e);
+      return false;
     }
   }
 
@@ -214,7 +522,6 @@ public class WatcherServiceMain
     return podName;
   }
 
-
   private void cleanupResources()
   {
     LOGGER.info("Starting cleanup of resources");
@@ -226,6 +533,20 @@ public class WatcherServiceMain
         if( keyExchangeSvc != null )
         {
           keyExchangeSvc.shutdown();
+        }
+
+        // Close Pulsar Admin client
+        if (pulsarAdmin != null) 
+        {
+          try 
+          {
+            pulsarAdmin.close();
+            LOGGER.info("Pulsar Admin client closed");
+          } 
+          catch (Exception e) 
+          {
+            LOGGER.warn("Error closing Pulsar Admin client: {}", e.getMessage(), e);
+          }
         }
     
         // First undeploy all verticles in reverse order
@@ -286,6 +607,7 @@ public class WatcherServiceMain
  
     System.exit( 1 );
   }
+
   private void deployPrerequisiteServices()
   {
     workerExecutor.executeBlocking( () -> 
@@ -390,112 +712,6 @@ public class WatcherServiceMain
     return promise.future();
   }  
   
-/**  
-  private Future<String> waitForKeyExchange() 
-  {
-    Promise<String> keyExchangePromise = Promise.promise();
- 
-    workerExecutor.executeBlocking(() -> 
-    {
-      LOGGER.info( "WatcherSErviceMain.waitForKeyExchange - Start inside workerExcecutor" );
-      // Create event bus consumer with proper lifecycle management
-      final long   timeoutMs = 3000000; // 30 seconds timeout
-    
-      // Set up a timer for the timeout
-      final long timerId = vertx.setTimer( timeoutMs, id -> 
-      {
-        if( !keyExchangePromise.future().isComplete() ) 
-        {
-          String msg = "Timeout waiting for key exchange completion after " + timeoutMs + "ms";
-          LOGGER.error(msg);
-          keyExchangePromise.fail(msg);
-        }
-      });
-    
-      // Create the consumer and register completion handler
-      final MessageConsumer<byte[]> consumer = vertx.eventBus().consumer( "watcher.keyExchange.complete", (Message<byte[]> message)-> 
-      {
-        try 
-        {
-          LOGGER.info("WatcherServiceMain.waitForKeyExchange - Key exchange completion message received");
-          String result = new String( message.body(), StandardCharsets.UTF_8);
-          LOGGER.info("WatcherServiceMain.waitForKeyExchange - status received = " + result );
-         
-          // Cancel the timeout timer
-          vertx.cancelTimer( timerId );
-        
-          // Process the completion and reply to the sender
-          if( result != null && result.compareTo( ServiceCoreIF.SUCCESS ) == 0 ) 
-          {
-            message.reply( ServiceCoreIF.SUCCESS );
-            keyExchangePromise.complete( ServiceCoreIF.SUCCESS );
-            LOGGER.info("Initial Key exchange completed successfully");
-          } 
-          else 
-          {
-            String errorMsg = "Initial Key exchange failed with result: " + result;
-            LOGGER.error(errorMsg);
-            keyExchangePromise.fail(errorMsg);
-          }
-        }  
-        catch( Exception e ) 
-        {
-          LOGGER.error("Error handling key exchange completion", e);
-          keyExchangePromise.fail(e);
-        }
-      });
-    
-      // Ensure proper cleanup on completion
-      keyExchangePromise.future().onComplete(ar -> 
-      {
-        // Unregister the consumer
-        consumer.unregister().onComplete(unregResult -> 
-        {
-          if( unregResult.succeeded() ) 
-          {
-            LOGGER.debug("Key exchange consumer unregistered successfully");
-          } 
-          else 
-          {
-            LOGGER.warn("Failed to unregister key exchange consumer", unregResult.cause());
-          }
-        });
-      
-        // Always cancel the timer to prevent memory leaks
-        vertx.cancelTimer(timerId);
-      
-        vertx.runOnContext(v -> 
-        {
-          consumer.unregister().onComplete(unregResult -> 
-          {
-            if( unregResult.succeeded() ) 
-            {
-              LOGGER.debug("Key exchange response consumer unregistered successfully");
-            }
-            else 
-            {
-              LOGGER.warn("Failed to unregister key exchange response consumer", unregResult.cause());
-            }
-          });
-        });
- 
-        if( ar.succeeded() ) 
-        {
-          LOGGER.info("Key exchange completed successfully");
-        } 
-        else 
-        {
-          LOGGER.error("Key exchange failed: {}", ar.cause().getMessage());
-        }
-      });
-
-      return ServiceCoreIF.SUCCESS;
-    });  
-    
-    return keyExchangePromise.future();
-  }
-**/
-  
   /**
    * Deploys the verticles for the WatcherService.
    * 
@@ -544,7 +760,6 @@ public class WatcherServiceMain
     LOGGER.info("WatcherServiceMain.deployPulsarVerticles() - Consumer and Producer verticles deployed successfully");   
   }
 
-  
   private void deploySecretsVerticle() 
    throws Exception 
   {
@@ -577,7 +792,19 @@ public class WatcherServiceMain
       return ServiceCoreIF.SUCCESS;
     });
   }
-  
+
+  // Getters for accessing components
+  public PulsarAdmin getPulsarAdmin() {
+    return pulsarAdmin;
+  }
+
+  public PulsarAuthManager getAuthManager() {
+    return authManager;
+  }
+
+  public KubernetesClient getKubernetesClient() {
+    return kubeClient;
+  }
   
   public static void main( String[] args )
   {

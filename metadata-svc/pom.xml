@@ -2,7 +2,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>8620af4c-6343-425c-82d2-41b7b148dd81.org</groupId>
   <artifactId>metadata-svc</artifactId>
-  <version>0.0.1-SNAPSHOT</version>
+  <version>0.1</version>
 
   <properties>
     <vertx.version>4.5.14</vertx.version>
@@ -73,6 +73,7 @@
   </dependencies>
   
   <build>
+    <finalName>metadatasvc-0.1</finalName>
     <plugins>
       <!-- Compiler plugin -->
       <!-- Maven Compiler Plugin -->
